@@ -1,4 +1,4 @@
-# Anubandh (अनुबंध)
+# Anubandh 
 
 **Programmable B2B payment deals with built-in MSME compliance and cash forecasting on Drunix.**
 

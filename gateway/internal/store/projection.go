@@ -22,9 +22,10 @@ type EventRow struct {
 	TxID      string
 	BlockNo   *uint64
 	Ts        time.Time
+	Seq       int // position inside a TxEventBatch; 0 for an unbatched event
 }
 
-// InsertEvent records a chain event once. inserted=false means (txId, eventName) was already
+// InsertEvent records a chain event once. inserted=false means (txId, eventName, seq) was already
 // projected, so the caller must not apply the event's side effects again.
 func InsertEvent(ctx context.Context, q DBTX, e EventRow) (id int64, inserted bool, err error) {
 	payload := e.Payload
@@ -44,11 +45,11 @@ func InsertEvent(ctx context.Context, q DBTX, e EventRow) (id int64, inserted bo
 		block = &b
 	}
 	err = q.QueryRow(ctx, `
-		INSERT INTO deal_events (deal_id, tranche_no, event_name, payload, tx_id, block_no, ts)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
-		ON CONFLICT (tx_id, event_name) WHERE tx_id IS NOT NULL DO NOTHING
+		INSERT INTO deal_events (deal_id, tranche_no, event_name, payload, tx_id, block_no, ts, event_seq)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (tx_id, event_name, event_seq) WHERE tx_id IS NOT NULL DO NOTHING
 		RETURNING id`,
-		e.DealID, e.TrancheNo, e.EventName, payload, txID, block, e.Ts.UTC()).Scan(&id)
+		e.DealID, e.TrancheNo, e.EventName, payload, txID, block, e.Ts.UTC(), e.Seq).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, false, nil
 	}

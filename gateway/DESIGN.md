@@ -11,7 +11,7 @@ owners need to know at merge time. Every external claim below links to its sourc
 | Drunix's own Go sample app uses `github.com/hyperledger/fabric-gateway` | `drunix-network/asset-transfer-basic/application-gateway-go` in the same repo | `internal/fabric/client.go` uses that SDK (v1.13.0) |
 | Lite Peers endorse; they "delegate CommitStatus" to Committing Peers | [docs/drunix-arch.md](https://github.com/npci/drunix/blob/main/docs/drunix-arch.md) | endorse → submit → commit-status flow works through one gateway peer |
 | The gateway peer's chaincode-event stream skips invalid transactions | `internal/pkg/gateway/event/chaincodeiterator.go` (`if !transaction.Valid() { continue }`) | the listener never sees events from failed transactions |
-| `SetEvent`: "Only a single event can be included in a transaction" | vendored `fabric-chaincode-go/shim/interfaces.go` | the projector re-reads the ledger after every event (see §2) |
+| `SetEvent`: "Only a single event can be included in a transaction" | vendored `fabric-chaincode-go/shim/interfaces.go` | the chaincode wraps several events in one `TxEventBatch`; the listener unwraps it, and the projector re-reads the ledger after every event (see §2) |
 | Drunix's own `go.mod` is Go 1.26 | `go.mod` in npci/drunix | the gateway builds with Go 1.26 (see §6) |
 
 **Verified:** the real `GatewayClient` passes `TestGatewayClientAgainstFabricGatewayProtocol`. That
@@ -25,12 +25,18 @@ gateway with `FABRIC_MOCK=false`, then run `go run ./cmd/smoke` with a sim-bank.
 
 * **The read model matches the ledger.** Each event is projected from its payload with guards that
   only move status forward. The deal is then re-read from the ledger (`GetDeal`, `ListTranches`,
-  `GetHeldPortions`). Fabric carries one event per transaction, and QC changes the tranche, held
-  portions and MSE clock in one transaction, so the payload alone can never be the source of truth.
+  `GetHeldPortions`), so the payload alone is never the source of truth.
+* **Batched events are unwrapped.** Fabric carries one event per transaction, and QC changes the
+  tranche, held portions and MSE clock at once. The chaincode therefore sends a transaction's
+  several events as one `TxEventBatch` (`{dealId, txId, ts, events:[{name, payload}]}`, agreed in
+  `chaincode/deal/CONTRACT_CHANGE_001.md`). The listener records, projects, pays and publishes
+  each inner event on its own, in order, in the same database transaction. Tested: a QC with
+  rejections on two lines yields five rows (two `HeldPortionCreated`), five SSE messages, and no
+  duplicates on a full replay.
 * **Each event takes effect once.** Delivery from the chain is at-least-once. Three writes commit in
   one PostgreSQL transaction: the projection, the `payment_outbox` row and `chain_checkpoint`.
-  `deal_events` is unique on (txId, event). Tested: a restart resumes at the right block, and a
-  full replay from block 0 duplicates nothing.
+  `deal_events` is unique on (txId, event, position in the batch). Tested: a restart resumes at
+  the right block, and a full replay from block 0 duplicates nothing.
 * **Each payment is made once.** The outbox key is (deal, tranche). The bank instruction id is
   deterministic (`PAY-<deal>-<tranche>`), so a resend after a crash gets the same `bankRef`.
   Replicas claim rows with `FOR UPDATE SKIP LOCKED`. Settlement goes back on chain via
@@ -67,11 +73,21 @@ Sources: [Taxmann: buyer's liability u/s 15](https://taxmann.com/post/blog/faqs-
 * **M1 (chaincode).**
   * Put the frozen code at the start of the chaincode error, e.g. `ERR_DUPLICATE: ...`. The gateway
     extracts the first known `ERR_*` token from the peer's error text.
-  * Because of the one-event rule, emit the *primary* event of each transaction. The read model is
-    reconciled anyway.
+  * Checked against `feat/chaincode` (b5b96af): function names, argument order, transient
+    `lines`, ledger JSON fields, status values and event payloads all match the gateway.
+  * Multi-event transactions use `TxEventBatch` exactly as in `CONTRACT_CHANGE_001.md`; the
+    gateway unwraps it and the mock emits the identical encoding.
+  * `TickDeadlines` is signed by `svc-bank` (BANK), as `CONTRACT_CHANGE_001.md` §4 requires.
   * `TrancheReleased` needs `amountPaise` and `supplierAccountRef`. If they are missing, the
     listener reads the amount from `GetTranche`.
   * QC before receipt must return `ERR_INVALID_TRANSITION`, so the worker requeues it.
+  * Open differences to settle at stand-up (the chaincode stays the authority meanwhile):
+    * **MSE clock start.** The chaincode starts it at the QC timestamp; MSMED Act §2(b) puts
+      acceptance on the day of delivery (see §3), which the mock follows.
+    * **Deemed acceptance scope.** The chaincode applies it to MSE deals only; BUILD.md §5.3 does
+      not restrict it, and the mock applies it to every deal.
+    * **Lien amount (D-4).** The chaincode requires lien = PO value; the gateway accepts lien ≥ PO
+      value, so a larger lien is rejected by the chaincode with `ERR_BAD_REQUEST` (HTTP 400).
   * The mock (`internal/fabric/mock_chaincode.go`) mirrors the §5.5 invariants with the same test
     names; use it as an executable reference.
 * **M3 (infra/ingest).**
@@ -105,7 +121,8 @@ Sources: [Taxmann: buyer's liability u/s 15](https://taxmann.com/post/blog/faqs-
    * the approve response carries `release`;
    * the compliance report carries `summary`;
    * MSE clocks carry `secondsLeft`, `atRisk` and `overdue`;
-   * tranches carry `releasedAt` and `settledAt` from the read model.
+   * tranches carry `releasedAt` and `settledAt` from the read model;
+   * `deal_events` has an `event_seq` column (position inside a `TxEventBatch`).
    The internal-only route `/internal/v1/mock/clock` is also new.
 
 ## 6. Security review (summary)

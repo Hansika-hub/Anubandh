@@ -276,6 +276,75 @@ func TestOutOfOrderQCBeforeReceiptRejected(t *testing.T) {
 	f.fails(apperr.ErrInvalidTransition, idWarehouse, "PostGoodsReceipt", "DL-20261020-0003", "1", `[{"lineNo":1,"deliveredQty":1}]`, "warehouse:GR-9")
 }
 
+// logical returns the logical event names one committed chain event carries (TxEventBatch unwrapped).
+func logical(t *testing.T, e mockEvent) []string {
+	t.Helper()
+	if e.EventName != model.EvTxEventBatch {
+		return []string{e.EventName}
+	}
+	var b struct {
+		Events []struct {
+			Name string `json:"name"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(e.Payload, &b); err != nil {
+		t.Fatalf("TxEventBatch payload: %v", err)
+	}
+	names := make([]string, len(b.Events))
+	for i, x := range b.Events {
+		names[i] = x.Name
+	}
+	return names
+}
+
+// The mock must encode events exactly like chaincode/deal/core/events.go: a lone event goes out as
+// itself; several go out as one TxEventBatch, in emission order, each with a complete payload.
+func TestEventsEncodedLikeChaincode(t *testing.T) {
+	f := newFixture(t)
+	f.funded(demo)
+	before := len(f.m.st.Events)
+	f.grn(demo.id, 1, 100, "warehouse:GR-1")
+	if got := f.m.st.Events[before].EventName; got != model.EvGoodsReceived {
+		t.Fatalf("a lone event must not be wrapped, got %s", got)
+	}
+	before = len(f.m.st.Events)
+	f.qc(demo.id, 1, 80, 20, "warehouse:QC-1")
+	if len(f.m.st.Events) != before+1 {
+		t.Fatalf("one transaction must commit one chain event, got %d", len(f.m.st.Events)-before)
+	}
+	ev := f.m.st.Events[before]
+	want := []string{model.EvQualityRecorded, model.EvHeldPortionCreated, model.EvTrancheAccepted, model.EvMseClockStarted}
+	if got := logical(t, ev); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("QC events: want %v, got %v", want, got)
+	}
+	var b struct {
+		DealID string `json:"dealId"`
+		TxID   string `json:"txId"`
+		Ts     string `json:"ts"`
+		Events []struct {
+			Payload map[string]any `json:"payload"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(ev.Payload, &b); err != nil {
+		t.Fatal(err)
+	}
+	if b.DealID != demo.id || b.TxID != ev.TxID || b.Ts == "" {
+		t.Fatalf("batch envelope must carry dealId, txId and ts: %+v", b)
+	}
+	for i, e := range b.Events {
+		if e.Payload["dealId"] != demo.id || e.Payload["txId"] != ev.TxID || e.Payload["ts"] == nil || e.Payload["trancheNo"] != float64(1) {
+			t.Fatalf("events[%d] payload incomplete: %v", i, e.Payload)
+		}
+	}
+	held := b.Events[1].Payload
+	if held["lineNo"] != float64(1) || held["qty"] != float64(20) || held["valuePaise"] != float64(20*1000000) {
+		t.Fatalf("HeldPortionCreated payload: %v", held)
+	}
+	if b.Events[2].Payload["deemed"] != false || b.Events[2].Payload["mseDeadline"] == nil {
+		t.Fatalf("TrancheAccepted payload: %v", b.Events[2].Payload)
+	}
+}
+
 func TestDeemedAcceptanceAfter15Days(t *testing.T) {
 	f := newFixture(t)
 	f.funded(demo)
@@ -287,6 +356,8 @@ func TestDeemedAcceptanceAfter15Days(t *testing.T) {
 		t.Fatalf("day 14: still DELIVERED, got %s", tr.Status)
 	}
 	f.clk.Advance(24 * time.Hour)
+	// The client proposes the transaction timestamp, so only BANK and BUYER may drive the clock.
+	f.fails(apperr.ErrForbiddenRole, idSup7, "TickDeadlines", demo.id)
 	before := len(f.m.st.Events)
 	f.ok(idProc, "TickDeadlines", demo.id)
 	tr := f.tranche(demo.id, 1)
@@ -297,8 +368,8 @@ func TestDeemedAcceptanceAfter15Days(t *testing.T) {
 	if !tr.MseClockStart.Equal(delivered) || !tr.MseDeadline.Equal(delivered.Add(45*24*time.Hour)) {
 		t.Fatalf("clock must start at delivery %v: start %v deadline %v", delivered, tr.MseClockStart, tr.MseDeadline)
 	}
-	if f.m.st.Events[before].EventName != model.EvDeemedAcceptance {
-		t.Fatalf("event %s", f.m.st.Events[before].EventName)
+	if got := logical(t, f.m.st.Events[before]); fmt.Sprint(got) != fmt.Sprint([]string{model.EvDeemedAcceptance, model.EvMseClockStarted}) {
+		t.Fatalf("deemed acceptance must announce DeemedAcceptance + MseClockStarted (BUILD.md §5.3), got %v", got)
 	}
 	// Idempotent: a second tick changes nothing and emits nothing new about this tranche.
 	f.ok(idProc, "TickDeadlines", demo.id)
@@ -328,8 +399,8 @@ func TestObjectionRestartsMseClock(t *testing.T) {
 	if !tr.MseClockStart.Equal(now) || !tr.MseDeadline.Equal(now.Add(45*24*time.Hour)) {
 		t.Fatalf("clock must restart at resolution %v: %v / %v", now, tr.MseClockStart, tr.MseDeadline)
 	}
-	if f.m.st.Events[before].EventName != model.EvMseClockRestarted {
-		t.Fatalf("event %s", f.m.st.Events[before].EventName)
+	if got := logical(t, f.m.st.Events[before]); fmt.Sprint(got) != fmt.Sprint([]string{model.EvObjectionResolved, model.EvMseClockRestarted}) {
+		t.Fatalf("resolution must announce ObjectionResolved + MseClockRestarted, got %v", got)
 	}
 	f.ok(idPlantHead, "ApproveRelease", demo.id, "1")
 }
@@ -520,8 +591,10 @@ func TestMseDeadlineApproachingEmittedOnce(t *testing.T) {
 	count := func() int {
 		n := 0
 		for _, e := range f.m.st.Events {
-			if e.EventName == model.EvMseDeadlineApproaching {
-				n++
+			for _, name := range logical(t, e) {
+				if name == model.EvMseDeadlineApproaching {
+					n++
+				}
 			}
 		}
 		return n

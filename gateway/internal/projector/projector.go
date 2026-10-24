@@ -4,9 +4,12 @@
 //  1. ApplyTx applies the event payload (BUILD.md §6) with forward-only guards, records the event
 //     once in deal_events, and is atomic with the listener checkpoint and the payment outbox.
 //  2. Reconcile re-reads the deal from the ledger (GetDeal / ListTranches / GetHeldPortions) and
-//     overwrites the projection. Fabric allows one chaincode event per transaction, so a
-//     transaction that changes several things (e.g. QC creating held portions) announces only
-//     one of them; reconciling from the ledger closes that gap.
+//     overwrites the projection, so the read model converges on the ledger even if a payload is
+//     thinner than expected.
+//
+// Fabric keeps one chaincode event per transaction, so the chaincode wraps a transaction's
+// several logical events in one TxEventBatch; Expand unwraps it and each logical event is
+// projected on its own.
 package projector
 
 import (
@@ -50,6 +53,7 @@ func New(st *store.Store, reader Reader, id fabric.Identity, log *slog.Logger) *
 type Meta struct {
 	TxID    string
 	BlockNo *uint64
+	Seq     int // position inside a TxEventBatch
 }
 
 // Result reports what ApplyTx did.
@@ -59,22 +63,83 @@ type Result struct {
 	Envelope model.EventEnvelope
 }
 
-// Apply projects one event in its own transaction and reconciles the deal (BUILD.md §8.2).
+// Apply projects one chain event (a TxEventBatch counts as one) in its own transaction and
+// reconciles the deals it touched (BUILD.md §8.2).
 func (p *Projector) Apply(eventName string, payload []byte) error {
 	ctx := context.Background()
-	var res Result
-	err := p.store.InTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		res, err = p.ApplyTx(ctx, tx, eventName, payload, Meta{})
+	evs, err := Expand(eventName, payload)
+	if err != nil {
 		return err
+	}
+	var deals []string
+	err = p.store.InTx(ctx, func(tx pgx.Tx) error {
+		deals = deals[:0]
+		for _, ev := range evs {
+			res, err := p.ApplyTx(ctx, tx, ev.Name, ev.Payload, Meta{Seq: ev.Seq})
+			if err != nil {
+				return err
+			}
+			deals = appendDeal(deals, res.Envelope.DealID)
+		}
+		return nil
 	})
 	if err != nil {
 		return err
 	}
-	if res.Envelope.DealID != "" {
-		return p.Reconcile(ctx, res.Envelope.DealID)
+	for _, id := range deals {
+		if err := p.Reconcile(ctx, id); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// appendDeal adds id to ids unless it is empty or already present (batches are small).
+func appendDeal(ids []string, id string) []string {
+	if id == "" {
+		return ids
+	}
+	for _, x := range ids {
+		if x == id {
+			return ids
+		}
+	}
+	return append(ids, id)
+}
+
+// Logical is one logical chain event: an unbatched event, or one entry of a TxEventBatch.
+type Logical struct {
+	Name    string
+	Payload []byte
+	Seq     int // position inside the batch; 0 for an unbatched event
+}
+
+// Expand unwraps a TxEventBatch into its logical events in emission order. Any other event is
+// returned as itself. A malformed batch is ErrBadPayload: retrying cannot fix it.
+func Expand(name string, payload []byte) ([]Logical, error) {
+	if name != model.EvTxEventBatch {
+		return []Logical{{Name: name, Payload: payload}}, nil
+	}
+	var batch struct {
+		Events []struct {
+			Name    string          `json:"name"`
+			Payload json.RawMessage `json:"payload"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(payload, &batch); err != nil {
+		return nil, fmt.Errorf("%w: %s is not valid JSON: %w", ErrBadPayload, name, err)
+	}
+	if len(batch.Events) == 0 {
+		return nil, fmt.Errorf("%w: %s has no events", ErrBadPayload, name)
+	}
+	out := make([]Logical, len(batch.Events))
+	for i, e := range batch.Events {
+		if e.Name == "" || e.Name == model.EvTxEventBatch {
+			return nil, fmt.Errorf("%w: %s entry %d has invalid name %q", ErrBadPayload, name, i, e.Name)
+		}
+		out[i] = Logical{Name: e.Name, Payload: e.Payload, Seq: i}
+	}
+	return out, nil
 }
 
 // ErrBadPayload marks an event whose payload cannot be projected. Retrying will not help.
@@ -111,7 +176,7 @@ func (p *Projector) ApplyTx(ctx context.Context, tx pgx.Tx, eventName string, pa
 	}
 	id, inserted, err := store.InsertEvent(ctx, tx, store.EventRow{
 		DealID: env.DealID, TrancheNo: env.TrancheNo, EventName: eventName, Payload: payload,
-		TxID: meta.TxID, BlockNo: meta.BlockNo, Ts: ts,
+		TxID: meta.TxID, BlockNo: meta.BlockNo, Ts: ts, Seq: meta.Seq,
 	})
 	if err != nil {
 		return res, err

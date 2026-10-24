@@ -36,7 +36,7 @@
   "service": {
     "listener": "svc-buyer",
     "reader": "svc-buyer",
-    "scheduler": "svc-buyer",
+    "scheduler": "svc-bank",
     "bank": "svc-bank",
     "autoRelease": "svc-buyer",
     "internal": {

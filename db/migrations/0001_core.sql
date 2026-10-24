@@ -89,11 +89,13 @@ CREATE TABLE IF NOT EXISTS deal_events (
     payload    jsonb       NOT NULL DEFAULT '{}'::jsonb,
     tx_id      text,
     block_no   bigint,
-    ts         timestamptz NOT NULL DEFAULT now()
+    ts         timestamptz NOT NULL DEFAULT now(),
+    event_seq  int         NOT NULL DEFAULT 0 CHECK (event_seq >= 0)  -- position inside a TxEventBatch
 );
 CREATE INDEX IF NOT EXISTS deal_events_deal_idx ON deal_events (deal_id, id);
--- One chaincode event per Fabric transaction: (tx_id, event_name) makes projection idempotent on replay.
-CREATE UNIQUE INDEX IF NOT EXISTS deal_events_tx_event_uq ON deal_events (tx_id, event_name) WHERE tx_id IS NOT NULL;
+-- Fabric keeps one chaincode event per transaction; a TxEventBatch carries several logical events
+-- (possibly with the same name), so (tx_id, event_name, event_seq) makes projection idempotent on replay.
+CREATE UNIQUE INDEX IF NOT EXISTS deal_events_tx_seq_uq ON deal_events (tx_id, event_name, event_seq) WHERE tx_id IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS chain_checkpoint (
     listener_id text   PRIMARY KEY,

@@ -485,7 +485,29 @@ func ccRecordQualityCheck(t *mtx, a []string) ([]byte, error) {
 	recomputeDealStatus(t, d)
 	t.touch(d.DealID)
 	t.emit(model.EvQualityRecorded, d.DealID, map[string]any{"trancheNo": n, "acceptedValuePaise": accVal, "heldValuePaise": heldVal})
+	for _, h := range held {
+		t.emit(model.EvHeldPortionCreated, d.DealID, map[string]any{"trancheNo": n, "lineNo": h.LineNo, "qty": h.Qty, "valuePaise": h.ValuePaise})
+	}
+	if accVal > 0 {
+		emitAcceptance(t, d, tr, model.EvTrancheAccepted)
+	}
 	return nil, nil
+}
+
+// emitAcceptance announces an acceptance (TrancheAccepted or DeemedAcceptance) followed, on MSE
+// deals, by the payment clock it starts, in the same order as the real chaincode.
+func emitAcceptance(t *mtx, d *model.Deal, tr *mockTranche, name string) {
+	p := map[string]any{"trancheNo": tr.TrancheNo}
+	if tr.MseClockStart != nil {
+		p["mseClockStart"], p["mseDeadline"] = tr.MseClockStart, tr.MseDeadline
+	}
+	if name == model.EvTrancheAccepted {
+		p["deemed"] = false
+	}
+	t.emit(name, d.DealID, p)
+	if d.MSE.Applies && tr.MseClockStart != nil {
+		t.emit(model.EvMseClockStarted, d.DealID, map[string]any{"trancheNo": tr.TrancheNo, "termDays": d.MSE.TermDays, "mseDeadline": tr.MseDeadline})
+	}
 }
 
 // ---- approval & release ----
@@ -976,10 +998,9 @@ func ccResolveObjection(t *mtx, a []string) ([]byte, error) {
 		// §2(b)(i)(b): acceptance day becomes the day the objection was removed.
 		startMseClock(d, tr, now)
 	}
+	t.emit(model.EvObjectionResolved, d.DealID, map[string]any{"trancheNo": n})
 	if d.MSE.Applies && tr.MseClockStart != nil {
 		t.emit(model.EvMseClockRestarted, d.DealID, map[string]any{"trancheNo": n, "mseClockStart": tr.MseClockStart, "mseDeadline": tr.MseDeadline})
-	} else {
-		t.emit(model.EvObjectionResolved, d.DealID, map[string]any{"trancheNo": n})
 	}
 	return nil, nil
 }
@@ -1058,6 +1079,11 @@ func ccApplyDisputeTimeout(t *mtx, a []string) ([]byte, error) {
 // ---- time rules ----
 
 func ccTickDeadlines(t *mtx, a []string) ([]byte, error) {
+	// The transaction timestamp is proposed by the client, so only the orgs that endorse the
+	// deal may drive its clock (the real chaincode enforces the same rule).
+	if err := t.requireOrg(model.OrgBank, model.OrgBuyer); err != nil {
+		return nil, err
+	}
 	d, err := t.deal(a[0])
 	if err != nil {
 		return nil, err
@@ -1066,30 +1092,24 @@ func ccTickDeadlines(t *mtx, a []string) ([]byte, error) {
 		expire(t, d)
 		return nil, nil
 	}
-	var deemed, warn *mockTranche
+	deemed := map[int64]bool{}
 	for _, tr := range t.st().Tranches[d.DealID] {
 		if tr.Status == model.TrancheDelivered && tr.DeliveredAt != nil && (tr.Obj == nil || !tr.Obj.Open) &&
 			!t.now.Before(acceptanceDay(tr).Add(deemedAcceptanceAfter)) {
 			deemAccept(t, d, tr)
-			if deemed == nil {
-				deemed = tr
-			}
+			emitAcceptance(t, d, tr, model.EvDeemedAcceptance)
+			deemed[tr.TrancheNo] = true
 		}
 	}
 	for _, tr := range t.st().Tranches[d.DealID] {
-		if warn == nil && tr.MseDeadline != nil && !tr.Warned && unpaid(tr.Status) && tr.MseDeadline.Sub(t.now) <= mseWarnWindow {
-			warn = tr
+		if !deemed[tr.TrancheNo] && tr.MseDeadline != nil && !tr.Warned && unpaid(tr.Status) && tr.MseDeadline.Sub(t.now) <= mseWarnWindow {
+			tr.Warned = true
+			t.emit(model.EvMseDeadlineApproaching, d.DealID, map[string]any{"trancheNo": tr.TrancheNo, "mseDeadline": tr.MseDeadline, "daysLeft": daysLeft(*tr.MseDeadline, t.now)})
 		}
 	}
-	switch {
-	case deemed != nil:
+	if len(t.events) > 0 {
 		recomputeDealStatus(t, d)
 		t.touch(d.DealID)
-		t.emit(model.EvDeemedAcceptance, d.DealID, map[string]any{"trancheNo": deemed.TrancheNo, "mseClockStart": deemed.MseClockStart, "mseDeadline": deemed.MseDeadline})
-	case warn != nil:
-		warn.Warned = true
-		t.touch(d.DealID)
-		t.emit(model.EvMseDeadlineApproaching, d.DealID, map[string]any{"trancheNo": warn.TrancheNo, "mseDeadline": warn.MseDeadline, "daysLeft": daysLeft(*warn.MseDeadline, t.now)})
 	}
 	return nil, nil
 }

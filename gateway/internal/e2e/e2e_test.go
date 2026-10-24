@@ -6,6 +6,7 @@ import (
 	"encoding/csv"
 	"fmt"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -264,6 +265,9 @@ func TestDeemedAcceptanceAndBigDealPolicy(t *testing.T) {
 	}
 }
 
+// deadlineRe matches the deliveryDeadline field whatever its value (it is derived from the clock).
+var deadlineRe = regexp.MustCompile(`"deliveryDeadline":"[^"]*"`)
+
 func TestAuthAndValidation(t *testing.T) {
 	e := setup(t)
 	body := e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, "")
@@ -283,7 +287,7 @@ func TestAuthAndValidation(t *testing.T) {
 		"term 30":          strings.Replace(body, `"termDays":45`, `"termDays":30`, 1),
 		"bad udyam":        strings.Replace(body, `UDYAM-KL-00-0000007`, `12345`, 1),
 		"not json":         `{"dealId":`,
-		"past deadline":    e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, "")[:0] + strings.Replace(body, e.clk.Now().Add(60*24*time.Hour).UTC().Format(time.RFC3339), "2020-01-01T00:00:00Z", 1),
+		"past deadline":    deadlineRe.ReplaceAllString(body, `"deliveryDeadline":"2020-01-01T00:00:00Z"`),
 		"no zero band":     e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"approvalPolicy":[{"minPaise":5,"requiredRoles":["CFO"]}]`),
 		"bad approver":     e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"approvalPolicy":[{"minPaise":0,"requiredRoles":["AUDITOR"]}]`),
 		"lien below value": e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"lienAmountPaise":5`),
@@ -456,15 +460,105 @@ func TestListenerResumesFromCheckpoint(t *testing.T) {
 	e.startListener()
 	e.waitIdle()
 	after := e.scalar(`SELECT count(*) FROM deal_events`)
-	if after != before+2 || after != int64(e.mock.EventCount()) {
-		t.Fatalf("resume must project exactly the 2 missed events: before %d after %d chain %d", before, after, e.mock.EventCount())
+	// GRN = 1 event; QC = one TxEventBatch of QualityRecorded + TrancheAccepted + MseClockStarted.
+	if after != before+4 || e.scalar(`SELECT count(DISTINCT tx_id) FROM deal_events`) != int64(e.mock.EventCount()) {
+		t.Fatalf("resume must project exactly the 2 missed chain events (4 logical): before %d after %d chain %d", before, after, e.mock.EventCount())
 	}
-	if n := e.scalar(`SELECT count(DISTINCT (tx_id, event_name)) FROM deal_events`); n != after {
+	if n := e.scalar(`SELECT count(DISTINCT (tx_id, event_name, event_seq)) FROM deal_events`); n != after {
 		t.Fatalf("duplicate events after resume")
 	}
 	cpBlock := e.scalar(`SELECT block_no FROM chain_checkpoint WHERE listener_id = 'e2e'`)
 	if uint64(cpBlock) != e.mock.Height() {
 		t.Fatalf("checkpoint block %d, chain height %d", cpBlock, e.mock.Height())
+	}
+}
+
+// TestTxEventBatchProjectedPerLogicalEvent: the chaincode wraps a transaction's several events in
+// one TxEventBatch (Fabric keeps one chaincode event per transaction). Each logical event must be
+// recorded, projected and published on its own, including two of the same name, and a full replay
+// of the channel must not duplicate any of them.
+func TestTxEventBatchProjectedPerLogicalEvent(t *testing.T) {
+	e := setup(t)
+	const id = "DL-20261020-0003"
+	body := fmt.Sprintf(`{"dealId":%q,"poNumber":"PO-4412","buyerId":"BUYER-001","supplierId":"SUP-007",
+		"deliveryDeadline":%q,"mse":{"category":"SMALL","termDays":45,"udyamNo":"UDYAM-KL-00-0000007","applies":true},
+		"lines":[{"lineNo":1,"sku":"SKU-STEEL-12","orderedQty":50,"unitPricePaise":1000000},
+		         {"lineNo":2,"sku":"SKU-STEEL-16","orderedQty":50,"unitPricePaise":1000000}]}`,
+		id, e.clk.Now().Add(60*24*time.Hour).UTC().Format(time.RFC3339))
+	e.must(201, e.do("POST", "/api/v1/deals", "BUYER", "buyer-procurement", body), "create two-line deal")
+	e.must(200, e.do("POST", "/api/v1/deals/"+id+"/lien", "BANK", "bank-officer", map[string]any{"lienRef": "LIEN-9922", "amountPaise": 100_000_000}), "lien")
+	e.must(200, e.internal("PostGoodsReceipt", id, "1", `[{"lineNo":1,"deliveredQty":50},{"lineNo":2,"deliveredQty":50}]`, "warehouse:GR-2"), "GRN")
+
+	ctx, cancel := context.WithTimeout(e.ctx, 10*time.Second)
+	defer cancel()
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, e.srv.URL+"/api/v1/events/stream?org=BUYER&dealId="+id, nil)
+	res, err := http.DefaultClient.Do(req) //nolint:bodyclose // closed by the defer below; read in a goroutine
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = res.Body.Close() }()
+	live := make(chan string, 16)
+	go func() {
+		sc := bufio.NewScanner(res.Body)
+		for sc.Scan() {
+			if strings.HasPrefix(sc.Text(), "event: ") {
+				live <- strings.TrimPrefix(sc.Text(), "event: ")
+			}
+		}
+		close(live)
+	}()
+	e.waitIdle()
+
+	e.must(200, e.internal("RecordQualityCheck", id, "1", `[{"lineNo":1,"acceptedQty":40,"rejectedQty":10},{"lineNo":2,"acceptedQty":45,"rejectedQty":5}]`, "warehouse:QC-2"), "QC")
+	e.waitIdle()
+	const want = "QualityRecorded/0,HeldPortionCreated/1,HeldPortionCreated/2,TrancheAccepted/3,MseClockStarted/4"
+	qcRows := func() string {
+		return e.text(`SELECT string_agg(event_name || '/' || event_seq, ',' ORDER BY event_seq) FROM deal_events
+			WHERE tx_id = (SELECT tx_id FROM deal_events WHERE deal_id = $1 AND event_name = 'QualityRecorded')`, id)
+	}
+	if got := qcRows(); got != want {
+		t.Fatalf("QC batch rows: want %s, got %s", want, got)
+	}
+	if n := e.scalar(`SELECT count(*) FROM deal_events WHERE event_name = 'TxEventBatch'`); n != 0 {
+		t.Fatalf("the batch envelope must be unwrapped, found %d raw rows", n)
+	}
+	if n := e.scalar(`SELECT count(*) FROM held_portions WHERE deal_id = $1`, id); n != 2 {
+		t.Fatalf("two held portions expected, got %d", n)
+	}
+	if v := e.scalar(`SELECT accepted_value_paise FROM tranches WHERE deal_id = $1 AND tranche_no = 1`, id); v != 85_000_000 {
+		t.Fatalf("accepted value %d", v)
+	}
+	// The stream first replays the deal's history; collect what follows the GRN.
+	var got []string
+	seenGRN := false
+	for len(got) < 5 {
+		select {
+		case ev := <-live:
+			if seenGRN {
+				got = append(got, ev)
+			}
+			seenGRN = seenGRN || ev == "GoodsReceived"
+		case <-time.After(5 * time.Second):
+			t.Fatalf("SSE: got only %v", got)
+		}
+	}
+	if fmt.Sprint(got) != "[QualityRecorded HeldPortionCreated HeldPortionCreated TrancheAccepted MseClockStarted]" {
+		t.Fatalf("SSE must publish each logical event in order, got %v", got)
+	}
+
+	// Full replay from block 0: nothing is projected twice.
+	rows := e.scalar(`SELECT count(*) FROM deal_events`)
+	e.stopListener()
+	if _, err := e.st.Pool.Exec(e.ctx, `DELETE FROM chain_checkpoint`); err != nil {
+		t.Fatal(err)
+	}
+	e.startListener()
+	e.waitIdle()
+	e.eventually("replay reached chain head", func() bool {
+		return uint64(e.scalar(`SELECT coalesce(max(block_no), 0) FROM chain_checkpoint`)) == e.mock.Height()
+	})
+	if n := e.scalar(`SELECT count(*) FROM deal_events`); n != rows || qcRows() != want {
+		t.Fatalf("replay duplicated events: %d rows before, %d after (%s)", rows, n, qcRows())
 	}
 }
 

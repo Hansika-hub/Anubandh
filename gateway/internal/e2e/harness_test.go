@@ -302,8 +302,9 @@ func (e *env) text(sql string, args ...any) string {
 // waitIdle waits until the listener has processed every event on the mock ledger.
 func (e *env) waitIdle() {
 	e.t.Helper()
+	// One chain event per transaction; a TxEventBatch becomes several rows with the same tx_id.
 	e.eventually("listener caught up", func() bool {
-		return e.scalar(`SELECT count(*) FROM deal_events`) >= int64(e.mock.EventCount())
+		return e.scalar(`SELECT count(DISTINCT tx_id) FROM deal_events`) >= int64(e.mock.EventCount())
 	})
 	time.Sleep(30 * time.Millisecond) // let the post-event reconcile finish
 }

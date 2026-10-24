@@ -29,6 +29,12 @@ const (
 	EvDisputeRaised           = "DisputeRaised"
 	EvDisputeResolved         = "DisputeResolved"
 	EvDealExpired             = "DealExpired"
+
+	// EvTxEventBatch carries two or more of the events above, in emission order, when one
+	// transaction emits several: Fabric keeps one chaincode event per transaction, and a later
+	// SetEvent replaces an earlier one. Payload: {dealId, txId, ts, events: [{name, payload}]}.
+	// Agreed with the chaincode owner in chaincode/deal/CONTRACT_CHANGE_001.md.
+	EvTxEventBatch = "TxEventBatch"
 )
 
 // EventEnvelope is the superset of every §6 payload field. Each event fills only its own fields;

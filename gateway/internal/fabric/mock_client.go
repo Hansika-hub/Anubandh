@@ -193,8 +193,7 @@ type mtx struct {
 	txID      string
 	now       time.Time
 	transient map[string][]byte
-	evName    string
-	evPayload map[string]any
+	events    []mockEmit
 	idem      []string
 	touched   map[string]bool
 }
@@ -355,9 +354,8 @@ func (m *MockClient) commit(t *mtx) uint64 {
 			m.st.History[dealID] = append(m.st.History[dealID], model.HistoryEntry{TxID: t.txID, Timestamp: &ts, Value: b})
 		}
 	}
-	if t.evName != "" {
-		b, _ := json.Marshal(t.evPayload)
-		m.st.Events = append(m.st.Events, mockEvent{Block: block, TxID: t.txID, EventName: t.evName, Payload: b})
+	if name, payload := encodeEvents(t.events); name != "" {
+		m.st.Events = append(m.st.Events, mockEvent{Block: block, TxID: t.txID, EventName: name, Payload: payload})
 		close(m.notify)
 		m.notify = make(chan struct{})
 	}
@@ -423,14 +421,35 @@ func (m *MockClient) ChaincodeEvents(ctx context.Context, _ Identity, startBlock
 
 func (t *mtx) st() *mockState { return t.m.st }
 
-// emit sets the transaction's single chaincode event. Like shim.SetEvent, a later call replaces
-// an earlier one. dealId, txId and ts are added to every payload (BUILD.md §6).
+// mockEmit is one logical event of a transaction.
+type mockEmit struct {
+	Name    string         `json:"name"`
+	Payload map[string]any `json:"payload"`
+}
+
+// emit records one logical event. dealId, txId and ts are added to every payload (BUILD.md §6).
 func (t *mtx) emit(name, dealID string, fields map[string]any) {
 	p := map[string]any{"dealId": dealID, "txId": t.txID, "ts": t.now}
 	for k, v := range fields {
 		p[k] = v
 	}
-	t.evName, t.evPayload = name, p
+	t.events = append(t.events, mockEmit{Name: name, Payload: p})
+}
+
+// encodeEvents turns a transaction's logical events into its single chaincode event, exactly as
+// the real chaincode does (chaincode/deal/core/events.go): one event goes out as itself, two or
+// more are wrapped in a TxEventBatch envelope in emission order.
+func encodeEvents(evs []mockEmit) (string, []byte) {
+	switch len(evs) {
+	case 0:
+		return "", nil
+	case 1:
+		b, _ := json.Marshal(evs[0].Payload)
+		return evs[0].Name, b
+	}
+	first := evs[0].Payload
+	b, _ := json.Marshal(map[string]any{"dealId": first["dealId"], "txId": first["txId"], "ts": first["ts"], "events": evs})
+	return model.EvTxEventBatch, b
 }
 
 func (t *mtx) useIdem(key string) error {

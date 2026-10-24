@@ -46,7 +46,8 @@ type Status struct {
 //
 // Delivery is at-least-once from the chain; effects are exactly-once because the projection,
 // the outbox row and the checkpoint commit in one database transaction, and deal_events is
-// unique on (txId, eventName).
+// unique on (txId, eventName, seq). A TxEventBatch is unwrapped and each logical event in it is
+// projected, paid and published on its own, all in that one transaction.
 type Listener struct {
 	client  fabric.Client
 	id      fabric.Identity
@@ -247,28 +248,35 @@ func (l *Listener) skip(ctx context.Context, ev *fabric.ChaincodeEvent, cause er
 	return nil
 }
 
-// handle projects one event, enqueues payments and advances the checkpoint atomically, then
-// reconciles the deal from the ledger and publishes the event to SSE subscribers.
+// handle projects one chain event (every logical event of a TxEventBatch), enqueues payments and
+// advances the checkpoint atomically, then reconciles the deals from the ledger and publishes
+// each logical event to SSE subscribers.
 func (l *Listener) handle(ev *fabric.ChaincodeEvent) error {
 	ctx := l.runCtx
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	evs, err := projector.Expand(ev.EventName, ev.Payload)
+	if err != nil {
+		return classify(err)
+	}
 	block := ev.BlockNumber
-	var res projector.Result
-	err := l.store.InTx(ctx, func(tx pgx.Tx) error {
-		var err error
-		res, err = l.proj.ApplyTx(ctx, tx, ev.EventName, ev.Payload, projector.Meta{TxID: ev.TransactionID, BlockNo: &block})
-		if err != nil {
-			return err
-		}
-		if res.Applied && ev.EventName == model.EvTrancheReleased && l.adapter != nil {
-			rel, err := l.releasedEvent(ctx, res.Envelope)
+	results := make([]projector.Result, len(evs))
+	err = l.store.InTx(ctx, func(tx pgx.Tx) error {
+		for i, le := range evs {
+			res, err := l.proj.ApplyTx(ctx, tx, le.Name, le.Payload, projector.Meta{TxID: ev.TransactionID, BlockNo: &block, Seq: le.Seq})
 			if err != nil {
 				return err
 			}
-			if err := l.adapter.EnqueueTx(ctx, tx, rel); err != nil {
-				return err
+			results[i] = res
+			if res.Applied && le.Name == model.EvTrancheReleased && l.adapter != nil {
+				rel, err := l.releasedEvent(ctx, res.Envelope)
+				if err != nil {
+					return err
+				}
+				if err := l.adapter.EnqueueTx(ctx, tx, rel); err != nil {
+					return err
+				}
 			}
 		}
 		return store.SaveCheckpoint(ctx, tx, l.opts.ListenerID, l.pos)
@@ -282,8 +290,13 @@ func (l *Listener) handle(ev *fabric.ChaincodeEvent) error {
 	l.status.BlockNo, l.status.TxIndex, l.status.LastEventAt = l.pos.BlockNo, l.pos.TxIndex, &now
 	l.mu.Unlock()
 
-	dealID := res.Envelope.DealID
-	if dealID != "" {
+	reconciled := map[string]bool{}
+	for _, res := range results {
+		dealID := res.Envelope.DealID
+		if dealID == "" || reconciled[dealID] {
+			continue
+		}
+		reconciled[dealID] = true
 		rctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		if err := l.proj.Reconcile(rctx, dealID); err != nil {
 			l.log.Warn("reconcile after event failed; will retry", "dealId", dealID, "err", err)
@@ -291,12 +304,18 @@ func (l *Listener) handle(ev *fabric.ChaincodeEvent) error {
 		}
 		cancel()
 	}
-	if res.Applied && l.hub != nil {
-		l.hub.Publish(events.Message{ID: res.EventID, Event: ev.EventName, DealID: dealID, Data: sseData(res.EventID, ev, res.Envelope)})
-	}
-	if res.Applied && ev.EventName == model.EvApprovalRecorded && l.opts.OnApprovalSigned != nil &&
-		res.Envelope.Satisfied != nil && *res.Envelope.Satisfied && res.Envelope.TrancheNo != nil {
-		go l.opts.OnApprovalSigned(dealID, *res.Envelope.TrancheNo)
+	for i, res := range results {
+		if !res.Applied {
+			continue
+		}
+		le, dealID := evs[i], res.Envelope.DealID
+		if l.hub != nil {
+			l.hub.Publish(events.Message{ID: res.EventID, Event: le.Name, DealID: dealID, Data: sseData(res.EventID, le, ev, res.Envelope)})
+		}
+		if le.Name == model.EvApprovalRecorded && l.opts.OnApprovalSigned != nil &&
+			res.Envelope.Satisfied != nil && *res.Envelope.Satisfied && res.Envelope.TrancheNo != nil {
+			go l.opts.OnApprovalSigned(dealID, *res.Envelope.TrancheNo)
+		}
 	}
 	return nil
 }
@@ -348,13 +367,14 @@ func (l *Listener) releasedEvent(ctx context.Context, e model.EventEnvelope) (ba
 	return rel, nil
 }
 
-func sseData(id int64, ev *fabric.ChaincodeEvent, env model.EventEnvelope) []byte {
-	payload := json.RawMessage(ev.Payload)
+// sseData is the SSE message body for logical event le, carried by chain event ev.
+func sseData(id int64, le projector.Logical, ev *fabric.ChaincodeEvent, env model.EventEnvelope) []byte {
+	payload := json.RawMessage(le.Payload)
 	if !json.Valid(payload) {
 		payload = json.RawMessage("null")
 	}
 	b, _ := json.Marshal(map[string]any{
-		"id": id, "eventName": ev.EventName, "dealId": env.DealID, "trancheNo": env.TrancheNo,
+		"id": id, "eventName": le.Name, "dealId": env.DealID, "trancheNo": env.TrancheNo,
 		"txId": ev.TransactionID, "blockNo": ev.BlockNumber, "ts": env.Ts, "payload": payload,
 	})
 	return b

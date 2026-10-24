@@ -1,0 +1,49 @@
+{
+  "orgs": {
+    "BUYER":    { "mspId": "BuyerMSP",    "peerEndpoint": "${FABRIC_PEER_BUYER}",    "hostOverride": "${FABRIC_HOST_BUYER}",    "tlsCACert": "${FABRIC_CRYPTO_DIR}/buyer/tlsca.pem" },
+    "SUPPLIER": { "mspId": "SupplierMSP", "peerEndpoint": "${FABRIC_PEER_SUPPLIER}", "hostOverride": "${FABRIC_HOST_SUPPLIER}", "tlsCACert": "${FABRIC_CRYPTO_DIR}/supplier/tlsca.pem" },
+    "BANK":     { "mspId": "BankMSP",     "peerEndpoint": "${FABRIC_PEER_BANK}",     "hostOverride": "${FABRIC_HOST_BANK}",     "tlsCACert": "${FABRIC_CRYPTO_DIR}/bank/tlsca.pem" },
+    "AUDITOR":  { "mspId": "AuditorMSP",  "peerEndpoint": "${FABRIC_PEER_AUDITOR}",  "hostOverride": "${FABRIC_HOST_AUDITOR}",  "tlsCACert": "${FABRIC_CRYPTO_DIR}/auditor/tlsca.pem" }
+  },
+  "users": [
+    { "userId": "buyer-warehouse",   "org": "BUYER",    "role": "WAREHOUSE",     "partyId": "BUYER-001", "displayName": "Warehouse Desk",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-warehouse/cert.pem",   "key": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-warehouse/key.pem" },
+    { "userId": "buyer-planthead",   "org": "BUYER",    "role": "PLANT_HEAD",    "partyId": "BUYER-001", "displayName": "Plant Head",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-planthead/cert.pem",   "key": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-planthead/key.pem" },
+    { "userId": "buyer-cfo",         "org": "BUYER",    "role": "CFO",           "partyId": "BUYER-001", "displayName": "CFO",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-cfo/cert.pem",         "key": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-cfo/key.pem" },
+    { "userId": "buyer-procurement", "org": "BUYER",    "role": "PROCUREMENT",   "partyId": "BUYER-001", "displayName": "Procurement",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-procurement/cert.pem", "key": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-procurement/key.pem" },
+    { "userId": "buyer-treasurer",   "org": "BUYER",    "role": "TREASURER",     "partyId": "BUYER-001", "displayName": "Treasurer",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-treasurer/cert.pem",   "key": "${FABRIC_CRYPTO_DIR}/buyer/users/buyer-treasurer/key.pem" },
+    { "userId": "supplier-007",      "org": "SUPPLIER", "role": "SUPPLIER_USER", "partyId": "SUP-007",   "displayName": "SUP-007 Accounts",
+      "cert": "${FABRIC_CRYPTO_DIR}/supplier/users/supplier-007/cert.pem",   "key": "${FABRIC_CRYPTO_DIR}/supplier/users/supplier-007/key.pem" },
+    { "userId": "supplier-012",      "org": "SUPPLIER", "role": "SUPPLIER_USER", "partyId": "SUP-012",   "displayName": "SUP-012 Accounts",
+      "cert": "${FABRIC_CRYPTO_DIR}/supplier/users/supplier-012/cert.pem",   "key": "${FABRIC_CRYPTO_DIR}/supplier/users/supplier-012/key.pem" },
+    { "userId": "bank-officer",      "org": "BANK",     "role": "BANK_OFFICER",                          "displayName": "Bank Officer",
+      "cert": "${FABRIC_CRYPTO_DIR}/bank/users/bank-officer/cert.pem",       "key": "${FABRIC_CRYPTO_DIR}/bank/users/bank-officer/key.pem" },
+    { "userId": "bank-arbiter",      "org": "BANK",     "role": "ARBITER",                               "displayName": "Arbiter",
+      "cert": "${FABRIC_CRYPTO_DIR}/bank/users/bank-arbiter/cert.pem",       "key": "${FABRIC_CRYPTO_DIR}/bank/users/bank-arbiter/key.pem" },
+    { "userId": "auditor",           "org": "AUDITOR",  "role": "AUDITOR",                               "displayName": "Auditor",
+      "cert": "${FABRIC_CRYPTO_DIR}/auditor/users/auditor/cert.pem",         "key": "${FABRIC_CRYPTO_DIR}/auditor/users/auditor/key.pem" },
+    { "userId": "svc-buyer",         "org": "BUYER",    "role": "PROCUREMENT",                           "displayName": "Gateway service (buyer)",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/svc-buyer/cert.pem",         "key": "${FABRIC_CRYPTO_DIR}/buyer/users/svc-buyer/key.pem" },
+    { "userId": "svc-warehouse",     "org": "BUYER",    "role": "WAREHOUSE",                             "displayName": "Ingest service (warehouse)",
+      "cert": "${FABRIC_CRYPTO_DIR}/buyer/users/svc-warehouse/cert.pem",     "key": "${FABRIC_CRYPTO_DIR}/buyer/users/svc-warehouse/key.pem" },
+    { "userId": "svc-bank",          "org": "BANK",     "role": "BANK_OFFICER",                          "displayName": "Gateway service (bank)",
+      "cert": "${FABRIC_CRYPTO_DIR}/bank/users/svc-bank/cert.pem",           "key": "${FABRIC_CRYPTO_DIR}/bank/users/svc-bank/key.pem" }
+  ],
+  "service": {
+    "listener": "svc-buyer",
+    "reader": "svc-buyer",
+    "scheduler": "svc-bank",
+    "bank": "svc-bank",
+    "autoRelease": "svc-buyer",
+    "internal": {
+      "PostGoodsReceipt": "svc-warehouse",
+      "RecordQualityCheck": "svc-warehouse",
+      "VerifyInvoice": "svc-buyer",
+      "ConfirmLien": "svc-bank"
+    }
+  }
+}

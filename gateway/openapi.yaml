@@ -1,0 +1,598 @@
+openapi: 3.0.3
+info:
+  title: Anubandh Gateway API
+  version: 1.0.0
+  description: |
+    REST API served by the gateway (owner M2) on :8080, BUILD.md §8.3.
+    Proposed content for contracts/gateway.openapi.yaml (to be merged via a `contract-change` PR).
+
+    Conventions (BUILD.md §2): money is int64 paise, times are RFC 3339 UTC, enums are UPPER_SNAKE_CASE.
+    Auth (prototype): `X-Org` on every /api/v1 call, plus `X-User` on writes. The gateway maps
+    `X-User` to the enrolled chain identity that signs the transaction. EventSource cannot set
+    headers, so `/events/stream` also accepts `?org=&user=`.
+servers:
+  - url: http://localhost:8080
+security:
+  - org: []
+tags:
+  - name: deals
+  - name: tranches
+  - name: held
+  - name: mse
+  - name: payments
+  - name: system
+  - name: internal
+paths:
+  /health:
+    get:
+      tags: [system]
+      summary: Liveness and component status
+      security: []
+      responses:
+        "200": { description: Healthy or degraded, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+        "503": { description: Database unreachable, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /api/v1/health:
+    get:
+      tags: [system]
+      summary: Same as /health
+      security: []
+      responses:
+        "200": { description: OK, content: { application/json: { schema: { $ref: "#/components/schemas/Health" } } } }
+  /api/v1/deals:
+    post:
+      tags: [deals]
+      summary: Create a deal (CreateDeal). Org BUYER.
+      description: |
+        Line prices travel in the chaincode transient map (`lines`) into the private data
+        collection; they never appear in the channel transaction. `lienAmountPaise` defaults to
+        the PO value. `approvalPolicy` defaults to PLANT_HEAD, plus CFO from ₹50 lakh.
+      parameters: [{ $ref: "#/components/parameters/XUser" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { $ref: "#/components/schemas/CreateDeal" } } }
+      responses:
+        "201":
+          description: Committed on chain
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  dealId: { type: string }
+                  txId: { type: string }
+                  status: { type: string, enum: [CREATED] }
+                  lienAmountPaise: { type: integer, format: int64 }
+        "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+    get:
+      tags: [deals]
+      summary: List deals (read model), newest first
+      parameters:
+        - { name: status, in: query, schema: { $ref: "#/components/schemas/DealStatus" } }
+        - { name: buyerId, in: query, schema: { type: string } }
+        - { name: supplierId, in: query, schema: { type: string } }
+        - { name: mse, in: query, schema: { type: boolean } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 50 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: Page of deals
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Deal" } }
+                  total: { type: integer }
+        "400": { $ref: "#/components/responses/Error" }
+  /api/v1/deals/{dealId}:
+    get:
+      tags: [deals]
+      summary: Deal detail with lines, tranches and held portions (unitPricePaise omitted for AUDITOR)
+      parameters: [{ $ref: "#/components/parameters/DealId" }]
+      responses:
+        "200": { description: Deal, content: { application/json: { schema: { $ref: "#/components/schemas/DealDetail" } } } }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/deals/{dealId}/history:
+    get:
+      tags: [deals]
+      summary: Ledger history of the deal key (GetDealHistory)
+      parameters: [{ $ref: "#/components/parameters/DealId" }]
+      responses:
+        "200":
+          description: History entries
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/HistoryEntry" } }
+                  total: { type: integer }
+        "404": { $ref: "#/components/responses/Error" }
+  /api/v1/deals/{dealId}/lien:
+    post:
+      tags: [deals]
+      summary: Bank confirms the lien (ConfirmLien). Org BANK.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [lienRef, amountPaise]
+              properties:
+                lienRef: { type: string, maxLength: 64 }
+                amountPaise: { type: integer, format: int64, minimum: 1 }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/tranches/{n}/ack:
+    post:
+      tags: [tranches]
+      summary: Supplier acknowledges delivery (AcknowledgeDelivery). Org SUPPLIER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/XUser" }]
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/tranches/{n}/approve:
+    post:
+      tags: [tranches]
+      summary: Approver signs (ApproveRelease); auto-releases when the policy is satisfied. Org BUYER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/XUser" }]
+      responses:
+        "200":
+          description: Approval committed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  txId: { type: string }
+                  dealId: { type: string }
+                  trancheNo: { type: integer }
+                  role: { $ref: "#/components/schemas/Role" }
+                  satisfied: { type: boolean }
+                  release:
+                    nullable: true
+                    type: object
+                    description: Present when the approval satisfied the policy.
+                    properties:
+                      txId: { type: string }
+                      idemKey: { type: string }
+                      alreadyReleased: { type: boolean }
+                      error: { $ref: "#/components/schemas/ErrorDetail" }
+        "403": { $ref: "#/components/responses/Error" }
+        "409": { $ref: "#/components/responses/Error" }
+  /api/v1/deals/{dealId}/tranches/{n}/release:
+    post:
+      tags: [tranches]
+      summary: Release an approved tranche (ReleaseTranche). Org BUYER.
+      description: Amount is computed on chain. Without an idemKey the gateway uses `gateway:release-<dealId>-<n>`, so repeated clicks cannot release twice.
+      parameters:
+        - { $ref: "#/components/parameters/DealId" }
+        - { $ref: "#/components/parameters/TrancheNo" }
+        - { $ref: "#/components/parameters/XUser" }
+        - { name: X-Idempotency-Key, in: header, schema: { type: string } }
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { idemKey: { type: string } } } } }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/tranches/{n}/objection:
+    post:
+      tags: [tranches]
+      summary: Buyer's written objection within 15 days of delivery (RaiseObjection). Org BUYER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody: { $ref: "#/components/requestBodies/Reason" }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/tranches/{n}/objection/resolve:
+    post:
+      tags: [tranches]
+      summary: Co-sign objection removal (ResolveObjection); the MSE clock restarts on the second signature. Org BUYER or SUPPLIER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/XUser" }]
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/replacement:
+    post:
+      tags: [held]
+      summary: Ship replacement units (ShipReplacement). Org SUPPLIER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [qty], properties: { qty: { type: integer, format: int64, minimum: 1 } } } } }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/credit-note:
+    post:
+      tags: [held]
+      summary: Propose a credit note (ProposeCreditNote). Org BUYER or SUPPLIER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [valuePaise], properties: { valuePaise: { type: integer, format: int64, minimum: 1 } } } } }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/credit-note/sign:
+    post:
+      tags: [held]
+      summary: Counter-party signs the credit note (SignCreditNote).
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/price-adjustment:
+    post:
+      tags: [held]
+      summary: Propose a lower unit price for held units (ProposePriceAdjustment). Org BUYER or SUPPLIER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [adjustedUnitPricePaise], properties: { adjustedUnitPricePaise: { type: integer, format: int64, minimum: 1 } } } } }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/price-adjustment/sign:
+    post:
+      tags: [held]
+      summary: Counter-party signs (SignPriceAdjustment); the units become a releasable tranche.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/dispute:
+    post:
+      tags: [held]
+      summary: Raise a dispute on a held portion (RaiseDispute). Org BUYER or SUPPLIER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody: { $ref: "#/components/requestBodies/Reason" }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/deals/{dealId}/held/{n}/{lineNo}/dispute/resolve:
+    post:
+      tags: [held]
+      summary: Arbiter resolves the dispute (ResolveDispute). Org BANK, role ARBITER.
+      parameters: [{ $ref: "#/components/parameters/DealId" }, { $ref: "#/components/parameters/TrancheNo" }, { $ref: "#/components/parameters/LineNo" }, { $ref: "#/components/parameters/XUser" }]
+      requestBody:
+        required: true
+        content: { application/json: { schema: { type: object, required: [resolution], properties: { resolution: { type: string, enum: [RELEASE_TO_SUPPLIER, REFUND_TO_BUYER] } } } } }
+      responses: { "200": { $ref: "#/components/responses/WriteOK" }, "400": { $ref: "#/components/responses/Error" }, "401": { $ref: "#/components/responses/Error" }, "403": { $ref: "#/components/responses/Error" }, "404": { $ref: "#/components/responses/Error" }, "409": { $ref: "#/components/responses/Error" }, "503": { $ref: "#/components/responses/Error" } }
+  /api/v1/mse/clocks:
+    get:
+      tags: [mse]
+      summary: MSMED Act payment clocks of MSE tranches, earliest deadline first
+      parameters:
+        - { name: riskDays, in: query, description: "If set, only unpaid tranches due within this many days (overdue included).", schema: { type: integer, minimum: 0 } }
+        - { name: supplierId, in: query, schema: { type: string } }
+        - { name: dealId, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Clocks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/MseClock" } }
+                  total: { type: integer }
+                  asOf: { type: string, format: date-time }
+                  riskDays: { type: integer }
+  /api/v1/mse/compliance-report:
+    get:
+      tags: [mse]
+      summary: Auditor export, one row per MSE tranche (format=csv downloads CSV). Org AUDITOR.
+      parameters:
+        - { name: format, in: query, schema: { type: string, enum: [json, csv], default: json } }
+      responses:
+        "200":
+          description: Report
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/ComplianceRow" } }
+                  total: { type: integer }
+                  summary: { type: object, additionalProperties: { type: integer } }
+                  generatedAt: { type: string, format: date-time }
+            text/csv: { schema: { type: string } }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/payments/outbox:
+    get:
+      tags: [payments]
+      summary: Payment outbox status. Org BANK or BUYER.
+      parameters:
+        - { name: status, in: query, schema: { type: string, enum: [PENDING, SENT, CONFIRMED, FAILED] } }
+        - { name: dealId, in: query, schema: { type: string } }
+        - { name: limit, in: query, schema: { type: integer, minimum: 1, maximum: 500, default: 100 } }
+        - { name: offset, in: query, schema: { type: integer, minimum: 0, default: 0 } }
+      responses:
+        "200":
+          description: Outbox rows
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/OutboxRow" } }
+                  total: { type: integer }
+        "403": { $ref: "#/components/responses/Error" }
+  /api/v1/events/stream:
+    get:
+      tags: [system]
+      summary: Server-Sent Events of projected chain events
+      description: |
+        `event:` is the chain event name (BUILD.md §6), `id:` is a monotonic event id. Reconnects
+        send `Last-Event-ID` (or `?lastEventId=`) to replay what was missed.
+      parameters:
+        - { name: dealId, in: query, schema: { type: string } }
+        - { name: org, in: query, description: Alternative to X-Org for EventSource, schema: { $ref: "#/components/schemas/Org" } }
+        - { name: lastEventId, in: query, schema: { type: integer } }
+      responses:
+        "200": { description: Event stream, content: { text/event-stream: { schema: { $ref: "#/components/schemas/StreamEvent" } } } }
+        "429": { $ref: "#/components/responses/Error" }
+  /internal/v1/submit:
+    post:
+      tags: [internal]
+      summary: Ingest workers submit inbound events to chain (BUILD.md §9.4). Compose network only.
+      security: [{ internalToken: [] }, {}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [fn, args]
+              properties:
+                fn: { type: string, enum: [PostGoodsReceipt, RecordQualityCheck, VerifyInvoice, ConfirmLien] }
+                args: { type: array, items: { type: string } }
+                idemKey: { type: string, description: Must equal the idemKey argument when the function takes one. }
+      responses:
+        "200": { description: Committed, content: { application/json: { schema: { type: object, properties: { txId: { type: string } } } } } }
+        "409": { description: "ERR_INVALID_TRANSITION (worker requeues) or ERR_DUPLICATE (worker marks processed)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+        "503": { description: "ERR_MVCC_CONFLICT after retries, or chain unavailable (worker retries)", content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+  /internal/v1/mock/clock:
+    post:
+      tags: [internal]
+      summary: FABRIC_MOCK only. Fast-forward chain time and run one deadline tick (demo of the 15-day rules).
+      security: [{ internalToken: [] }, {}]
+      requestBody:
+        content: { application/json: { schema: { type: object, properties: { advanceDays: { type: integer, minimum: 0, maximum: 400 }, advanceHours: { type: integer, minimum: 0 } } } } }
+      responses:
+        "200": { description: New time, content: { application/json: { schema: { type: object, properties: { now: { type: string, format: date-time }, offsetSeconds: { type: integer }, dealsTicked: { type: integer } } } } } }
+        "404": { $ref: "#/components/responses/Error" }
+components:
+  securitySchemes:
+    org: { type: apiKey, in: header, name: X-Org, description: "BUYER | SUPPLIER | BANK | AUDITOR" }
+    internalToken: { type: apiKey, in: header, name: X-Internal-Token, description: Required only when INTERNAL_TOKEN is set. }
+  parameters:
+    DealId: { name: dealId, in: path, required: true, schema: { type: string, pattern: "^DL-\\d{8}-\\d{4}$", example: DL-20261020-0001 } }
+    TrancheNo: { name: n, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    LineNo: { name: lineNo, in: path, required: true, schema: { type: integer, minimum: 1 } }
+    XUser: { name: X-User, in: header, required: true, description: "Registered user id, e.g. buyer-planthead (gateway/config/users.json)", schema: { type: string } }
+  requestBodies:
+    Reason:
+      required: true
+      content: { application/json: { schema: { type: object, required: [reason], properties: { reason: { type: string, maxLength: 1000 } } } } }
+  responses:
+    Error: { description: Error envelope, content: { application/json: { schema: { $ref: "#/components/schemas/Error" } } } }
+    WriteOK: { description: Committed on chain, content: { application/json: { schema: { $ref: "#/components/schemas/WriteResult" } } } }
+  schemas:
+    DealStatus: { type: string, enum: [CREATED, FUNDED, DELIVERED, ACCEPTED, PARTIALLY_ACCEPTED, RELEASED, SETTLED, DISPUTED, EXPIRED, CLOSED] }
+    TrancheStatus: { type: string, enum: [PENDING, DELIVERED, ACCEPTED, DEEMED_ACCEPTED, APPROVED, RELEASED, SETTLED, HELD, CLOSED] }
+    Org: { type: string, enum: [BUYER, SUPPLIER, BANK, AUDITOR] }
+    Role: { type: string, enum: [WAREHOUSE, PLANT_HEAD, CFO, PROCUREMENT, TREASURER, SUPPLIER_USER, BANK_OFFICER, ARBITER, AUDITOR] }
+    Rail: { type: string, enum: [UPI, IMPS, NEFT, RTGS] }
+    ErrorCode:
+      type: string
+      enum: [ERR_BAD_REQUEST, ERR_UNAUTHORIZED, ERR_FORBIDDEN_ROLE, ERR_NOT_FOUND, ERR_INVALID_TRANSITION, ERR_DUPLICATE, ERR_LIEN_EXCEEDED,
+        ERR_ALREADY_RELEASED, ERR_POLICY_NOT_SATISFIED, ERR_QTY_MISMATCH, ERR_OBJECTION_WINDOW_CLOSED, ERR_MSE_NOT_APPLICABLE,
+        ERR_BAD_SIGNATURE, ERR_RATE_LIMITED, ERR_MVCC_CONFLICT, ERR_INTERNAL]
+    ErrorDetail:
+      type: object
+      required: [code, message]
+      properties:
+        code: { $ref: "#/components/schemas/ErrorCode" }
+        message: { type: string }
+        details: { type: object, additionalProperties: true, description: "May contain txId; ambiguous=true when the commit outcome is unknown" }
+    Error:
+      type: object
+      required: [error]
+      properties: { error: { $ref: "#/components/schemas/ErrorDetail" } }
+    WriteResult:
+      type: object
+      required: [txId, dealId]
+      properties:
+        txId: { type: string }
+        dealId: { type: string }
+        trancheNo: { type: integer }
+        lineNo: { type: integer }
+      additionalProperties: true
+    MSE:
+      type: object
+      properties:
+        category: { type: string, enum: [MICRO, SMALL, MEDIUM, NONE], nullable: true }
+        termDays: { type: integer, enum: [15, 45], nullable: true }
+        udyamNo: { type: string, nullable: true, pattern: "^UDYAM-[A-Z]{2}-\\d{2}-\\d{7}$" }
+        applies: { type: boolean }
+    PolicyBand:
+      type: object
+      required: [minPaise, requiredRoles]
+      properties:
+        minPaise: { type: integer, format: int64, minimum: 0 }
+        requiredRoles: { type: array, items: { $ref: "#/components/schemas/Role" } }
+    CreateDeal:
+      type: object
+      required: [dealId, poNumber, supplierId, deliveryDeadline, lines]
+      properties:
+        dealId: { type: string, pattern: "^DL-\\d{8}-\\d{4}$" }
+        poNumber: { type: string, maxLength: 64 }
+        buyerId: { type: string, description: Defaults to the caller's party id }
+        supplierId: { type: string }
+        currency: { type: string, enum: [INR], default: INR }
+        lienAmountPaise: { type: integer, format: int64, description: "Defaults to the PO value; must cover it" }
+        mse: { $ref: "#/components/schemas/MSE" }
+        approvalPolicy: { type: array, items: { $ref: "#/components/schemas/PolicyBand" }, description: "Must include a minPaise 0 band" }
+        toleranceBps: { type: integer, minimum: 0, maximum: 10000, default: 0 }
+        deliveryDeadline: { type: string, format: date-time }
+        lines:
+          type: array
+          minItems: 1
+          maxItems: 500
+          items:
+            type: object
+            required: [lineNo, sku, orderedQty, unitPricePaise]
+            properties:
+              lineNo: { type: integer, minimum: 1, description: Sequential from 1 }
+              sku: { type: string }
+              orderedQty: { type: integer, format: int64, minimum: 1 }
+              unitPricePaise: { type: integer, format: int64, minimum: 1 }
+    Deal:
+      type: object
+      properties:
+        dealId: { type: string }
+        poNumber: { type: string }
+        buyerId: { type: string }
+        supplierId: { type: string }
+        status: { $ref: "#/components/schemas/DealStatus" }
+        currency: { type: string }
+        lienAmountPaise: { type: integer, format: int64 }
+        lienRef: { type: string, nullable: true }
+        totalReleasedPaise: { type: integer, format: int64 }
+        totalHeldPaise: { type: integer, format: int64 }
+        mse: { $ref: "#/components/schemas/MSE" }
+        deliveryDeadline: { type: string, format: date-time, nullable: true }
+        invoice: { type: object, properties: { irn: { type: string, nullable: true }, verified: { type: boolean } } }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    Line:
+      type: object
+      properties:
+        dealId: { type: string }
+        lineNo: { type: integer }
+        sku: { type: string }
+        orderedQty: { type: integer, format: int64 }
+        unitPricePaise: { type: integer, format: int64, description: Omitted for AUDITOR }
+        deliveredQty: { type: integer, format: int64 }
+        acceptedQty: { type: integer, format: int64 }
+        rejectedQty: { type: integer, format: int64 }
+        heldQty: { type: integer, format: int64 }
+    Tranche:
+      type: object
+      properties:
+        dealId: { type: string }
+        trancheNo: { type: integer }
+        status: { $ref: "#/components/schemas/TrancheStatus" }
+        lines:
+          type: array
+          items: { type: object, properties: { lineNo: { type: integer }, deliveredQty: { type: integer }, acceptedQty: { type: integer }, rejectedQty: { type: integer } } }
+        acceptedValuePaise: { type: integer, format: int64 }
+        heldValuePaise: { type: integer, format: int64 }
+        deliveredAt: { type: string, format: date-time, nullable: true }
+        acceptedAt: { type: string, format: date-time, nullable: true }
+        deemedAcceptance: { type: boolean }
+        approvals:
+          type: array
+          items: { type: object, properties: { role: { $ref: "#/components/schemas/Role" }, userId: { type: string }, signedAt: { type: string, format: date-time } } }
+        releaseIdemKey: { type: string, nullable: true }
+        bankRef: { type: string, nullable: true }
+        rail: { type: string, nullable: true }
+        mseClockStart: { type: string, format: date-time, nullable: true }
+        mseDeadline: { type: string, format: date-time, nullable: true }
+        releasedAt: { type: string, format: date-time, nullable: true }
+        settledAt: { type: string, format: date-time, nullable: true }
+        heldExit: { type: string, nullable: true }
+        objection: { type: object, nullable: true, additionalProperties: true }
+    HeldPortion:
+      type: object
+      properties:
+        dealId: { type: string }
+        trancheNo: { type: integer }
+        lineNo: { type: integer }
+        qty: { type: integer, format: int64 }
+        valuePaise: { type: integer, format: int64 }
+        exit: { type: string, enum: [REPLACEMENT, CREDIT_NOTE, PRICE_ADJUSTMENT, DISPUTE], nullable: true }
+        state: { type: string, description: "HELD | DISPUTED | CLOSED" }
+    DealDetail:
+      allOf:
+        - $ref: "#/components/schemas/Deal"
+        - type: object
+          properties:
+            approvalPolicy: { type: array, items: { $ref: "#/components/schemas/PolicyBand" } }
+            toleranceBps: { type: integer }
+            lines: { type: array, items: { $ref: "#/components/schemas/Line" } }
+            tranches: { type: array, items: { $ref: "#/components/schemas/Tranche" } }
+            heldPortions: { type: array, items: { $ref: "#/components/schemas/HeldPortion" } }
+    HistoryEntry:
+      type: object
+      properties:
+        txId: { type: string }
+        timestamp: { type: string, format: date-time }
+        isDelete: { type: boolean }
+        value: { type: object, additionalProperties: true }
+    MseClock:
+      type: object
+      properties:
+        dealId: { type: string }
+        trancheNo: { type: integer }
+        buyerId: { type: string }
+        supplierId: { type: string }
+        mseCategory: { type: string }
+        termDays: { type: integer }
+        udyamNo: { type: string }
+        status: { $ref: "#/components/schemas/TrancheStatus" }
+        amountPaise: { type: integer, format: int64 }
+        deliveredAt: { type: string, format: date-time }
+        acceptedAt: { type: string, format: date-time }
+        deemedAcceptance: { type: boolean }
+        mseClockStart: { type: string, format: date-time }
+        mseDeadline: { type: string, format: date-time }
+        daysLeft: { type: integer, description: Rounded up; negative when overdue }
+        secondsLeft: { type: integer, format: int64 }
+        paid: { type: boolean }
+        paidAt: { type: string, format: date-time, nullable: true }
+        atRisk: { type: boolean }
+        overdue: { type: boolean }
+    ComplianceRow:
+      type: object
+      properties:
+        dealId: { type: string }
+        trancheNo: { type: integer }
+        buyerId: { type: string }
+        supplierId: { type: string }
+        udyamNo: { type: string }
+        mseCategory: { type: string }
+        termDays: { type: integer }
+        amountPaise: { type: integer, format: int64 }
+        deliveredAt: { type: string, format: date-time }
+        acceptanceDate: { type: string, format: date-time, description: "Statutory day of acceptance / deemed acceptance (MSMED Act §2(b))" }
+        deemedAcceptance: { type: boolean }
+        mseDeadline: { type: string, format: date-time }
+        paidDate: { type: string, format: date-time, nullable: true }
+        onTime: { type: boolean, nullable: true }
+        daysLate: { type: integer }
+        complianceStatus: { type: string, enum: [PAID_ON_TIME, PAID_LATE, PENDING, OVERDUE] }
+    OutboxRow:
+      type: object
+      properties:
+        dealId: { type: string }
+        trancheNo: { type: integer }
+        amountPaise: { type: integer, format: int64 }
+        supplierAccountRef: { type: string }
+        rail: { $ref: "#/components/schemas/Rail" }
+        status: { type: string, enum: [PENDING, SENT, CONFIRMED, FAILED] }
+        bankRef: { type: string, nullable: true }
+        attempts: { type: integer }
+        lastError: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    StreamEvent:
+      type: object
+      description: The `data:` JSON of one SSE message.
+      properties:
+        id: { type: integer }
+        eventName: { type: string }
+        dealId: { type: string }
+        trancheNo: { type: integer, nullable: true }
+        txId: { type: string }
+        blockNo: { type: integer }
+        ts: { type: string, format: date-time }
+        payload: { type: object, additionalProperties: true }
+    Health:
+      type: object
+      properties:
+        status: { type: string, enum: [ok, degraded, down] }
+        svc: { type: string }
+        version: { type: string }
+        now: { type: string, format: date-time }
+        chain: { type: object, properties: { mode: { type: string, enum: [mock, drunix] }, channel: { type: string }, chaincode: { type: string } } }
+        db: { type: string }
+        listener: { type: object, additionalProperties: true }
+        outbox: { type: object, additionalProperties: { type: integer } }

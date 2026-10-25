@@ -77,7 +77,8 @@ services:
   ingest-worker:
     build: { context: ../ingest, dockerfile: Dockerfile }
     <<: *env
-    command: ["/app/ingest-worker"]
+    # The image ENTRYPOINT is ingest-api; `command:` would only append an argument to it.
+    entrypoint: ["/app/ingest-worker"]
     depends_on:
       postgres: { condition: service_healthy }
       redpanda-init: { condition: service_completed_successfully }

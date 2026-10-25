@@ -13,10 +13,9 @@ def read_table(table: str, org_id: str | None = None) -> pd.DataFrame:
     if not dsn:
         raise RuntimeError("PG_DSN not configured")
     import psycopg
-    with psycopg.connect(dsn) as conn:
-        with conn.cursor() as cursor:
-            cursor.execute(f'SELECT * FROM "{table}"' + (' WHERE "orgId" = %s' if org_id and table != 'suppliers_profile' else ''), (org_id,) if org_id and table != 'suppliers_profile' else ())
-            return pd.DataFrame(cursor.fetchall(), columns=[d.name for d in cursor.description])
+    with psycopg.connect(dsn) as conn, conn.cursor() as cursor:
+        cursor.execute(f'SELECT * FROM "{table}"' + (' WHERE "orgId" = %s' if org_id and table != 'suppliers_profile' else ''), (org_id,) if org_id and table != 'suppliers_profile' else ())
+        return pd.DataFrame(cursor.fetchall(), columns=[d.name for d in cursor.description])
 
 
 def ensure_forecast_tables() -> None:
@@ -37,6 +36,7 @@ def save_records(table: str, org_id: str, records: list[dict], key_field: str) -
     if not os.getenv("PG_DSN"):
         return
     import json
+
     import psycopg
     ensure_forecast_tables()
     with psycopg.connect(os.environ["PG_DSN"]) as conn:

@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from threading import RLock
 
-import numpy as np
 import pandas as pd
 from fastapi import APIRouter, HTTPException, Query
 
@@ -12,7 +10,11 @@ from forecast.app.schemas import WhatIfRequest
 from forecast.data.generator import generate_synthetic_year
 from forecast.engine.actions import rank_actions
 from forecast.engine.alerts import evaluate_alerts
-from forecast.engine.montecarlo import shortfall_probability, simulate_cash_paths, to_band
+from forecast.engine.montecarlo import (
+    shortfall_probability,
+    simulate_cash_paths,
+    to_band,
+)
 from forecast.eval.walkforward import walk_forward_eval
 from forecast.features.build import build_release_timing_features
 from forecast.models.timing_lgbm import train_quantile_models

@@ -69,7 +69,12 @@ class Stack:
         return r.json()
 
     def qc(self, deal_id: str, n: int, accepted: int, rejected: int, dupes: int = 0) -> dict:
-        body = {"dealId": deal_id, "trancheNo": n, "results": [{"lineNo": 1, "acceptedQty": accepted, "rejectedQty": rejected}], "dupes": dupes}
+        body = {
+            "dealId": deal_id,
+            "trancheNo": n,
+            "results": [{"lineNo": 1, "acceptedQty": accepted, "rejectedQty": rejected}],
+            "dupes": dupes,
+        }
         r = self.http.post(f"{SIM_GRN}/sim/qc/emit", json=body)
         assert r.status_code == 200, r.text
         return r.json()

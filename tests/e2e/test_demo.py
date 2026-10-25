@@ -65,7 +65,8 @@ def test_deemed_acceptance_and_two_approver_policy(stack: Stack) -> None:
     eventually("tranche delivered", lambda: (stack.tranche(deal, 1) or {}).get("status") == "DELIVERED")
 
     stack.advance_mock_clock(15)  # the gateway runs TickDeadlines right after moving the mock clock
-    t = eventually("deemed acceptance", lambda: (x := stack.tranche(deal, 1))["deemedAcceptance"] and x)
+    # The event sets the status at once; the reconcile that follows fills in the values from the chain.
+    t = eventually("deemed acceptance", lambda: (x := stack.tranche(deal, 1))["deemedAcceptance"] and x["acceptedValuePaise"] > 0 and x)
     assert t["acceptedValuePaise"] == 60 * LAKH and t["mseDeadline"], t
 
     clocks = stack.gw("GET", f"/mse/clocks?dealId={deal}", "buyer-procurement")["items"]

@@ -20,7 +20,7 @@ def web() -> httpx.Client:
 def test_spa_and_deep_links(web: httpx.Client) -> None:
     for path in ("/", "/deals/DL-20261020-0001", "/treasury"):
         r = web.get(path)
-        assert r.status_code == 200 and "<div id=\"root\">" in r.text, path
+        assert r.status_code == 200 and '<div id="root">' in r.text, path
 
 
 def test_backends_are_proxied(web: httpx.Client) -> None:

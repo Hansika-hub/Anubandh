@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -102,9 +103,9 @@ func (f *fixture) create(s dealSpec) {
 	f.t.Helper()
 	deadline := f.clk.Now().Add(60 * 24 * time.Hour).UTC().Format(time.RFC3339)
 	deal := fmt.Sprintf(`{"dealId":%q,"poNumber":"PO-4411","buyerId":"BUYER-001","supplierId":%q,"deliveryDeadline":%q,
-		"mse":{"category":%q,"termDays":%d,"udyamNo":"UDYAM-KL-00-0000007","applies":%v},
+		"mse":{"category":%q,"termDays":%d,"udyamNo":"UDYAM-KL-00-0000007","applies":%v,"writtenAgreement":%v},
 		"approvalPolicy":[{"minPaise":0,"requiredRoles":["PLANT_HEAD"]},{"minPaise":500000000,"requiredRoles":["PLANT_HEAD","CFO"]}]}`,
-		s.id, s.supplier, deadline, s.category, s.termDays, s.applies)
+		s.id, s.supplier, deadline, s.category, s.termDays, s.applies, s.termDays == 45)
 	lines := fmt.Sprintf(`[{"lineNo":1,"sku":"SKU-STEEL-12","orderedQty":%d,"unitPricePaise":%d}]`, s.qty, s.price)
 	if _, err := f.m.SubmitOnce(context.Background(), idProc, SubmitRequest{Fn: "CreateDeal", Args: []string{deal}, Transient: map[string][]byte{"lines": []byte(lines)}}); err != nil {
 		f.t.Fatalf("CreateDeal: %v", err)
@@ -220,6 +221,8 @@ func TestReleasedPlusHeldNeverExceedsLien(t *testing.T) {
 	f.ok(idSup7, "ShipReplacement", demo.id, "1", "1", "20")
 	check("after replacement shipped")
 	f.fails(apperr.ErrQtyMismatch, idWarehouse, "PostGoodsReceipt", demo.id, "2", `[{"lineNo":1,"deliveredQty":21}]`, "warehouse:GR-2x")
+	// Like the chaincode, a replacement receipt must deliver exactly what was shipped.
+	f.fails(apperr.ErrQtyMismatch, idWarehouse, "PostGoodsReceipt", demo.id, "2", `[{"lineNo":1,"deliveredQty":19}]`, "warehouse:GR-2y")
 	f.grn(demo.id, 2, 20, "warehouse:GR-2")
 	f.qc(demo.id, 2, 20, 0, "warehouse:QC-2")
 	f.ok(idPlantHead, "ApproveRelease", demo.id, "2")
@@ -262,6 +265,22 @@ func TestIdempotentDuplicateRejected(t *testing.T) {
 	if tr := f.tranche(demo.id, 1); tr.Lines[0].DeliveredQty != 100 {
 		t.Fatalf("duplicate must not change state: %+v", tr)
 	}
+	// The chaincode's key format: lower-case source, no dots, slashes or extra colons.
+	for _, key := range []string{"", "ERP:QC-1", "warehouse", "ware.house:GR-1", "erp/x:GR-1", "warehouse:GR:1", "warehouse:GR 1"} {
+		f.fails(apperr.ErrBadRequest, idWarehouse, "PostGoodsReceipt", demo.id, "2", `[{"lineNo":1,"deliveredQty":1}]`, key)
+	}
+}
+
+// TestOutOfOrderReplacementReceipt: a replacement GRN that arrives before ShipReplacement finds
+// nothing owed and fails with ERR_QTY_MISMATCH (as the chaincode does), and succeeds once shipped.
+func TestOutOfOrderReplacementReceipt(t *testing.T) {
+	f := newFixture(t)
+	f.funded(demo)
+	f.grn(demo.id, 1, 100, "warehouse:GR-1")
+	f.qc(demo.id, 1, 80, 20, "warehouse:QC-1")
+	f.fails(apperr.ErrQtyMismatch, idWarehouse, "PostGoodsReceipt", demo.id, "2", `[{"lineNo":1,"deliveredQty":20}]`, "warehouse:GR-2")
+	f.ok(idSup7, "ShipReplacement", demo.id, "1", "1", "20")
+	f.grn(demo.id, 2, 20, "warehouse:GR-2") // the failed attempt did not consume the key
 }
 
 func TestOutOfOrderQCBeforeReceiptRejected(t *testing.T) {
@@ -423,6 +442,13 @@ func TestMseClock45DayRequiresWrittenAgreementFlag(t *testing.T) {
 	if !apperr.Is(err, apperr.ErrBadRequest) {
 		t.Fatalf("termDays 60 must be rejected: %v", err)
 	}
+	for agreed, want := range map[bool]bool{false: false, true: true} {
+		d := strings.Replace(strings.Replace(deal, `"termDays":60`, `"termDays":45`, 1), `"applies":true`, fmt.Sprintf(`"applies":true,"writtenAgreement":%v`, agreed), 1)
+		_, err := f.m.SubmitOnce(context.Background(), idProc, SubmitRequest{Fn: "CreateDeal", Args: []string{d}, Transient: map[string][]byte{"lines": []byte(`[{"lineNo":1,"sku":"S","orderedQty":1,"unitPricePaise":1}]`)}})
+		if (err == nil) != want || (err != nil && !apperr.Is(err, apperr.ErrBadRequest)) {
+			t.Fatalf("termDays 45, writtenAgreement=%v: %v", agreed, err)
+		}
+	}
 	// MEDIUM enterprises are outside MSMED Act §15.
 	deal2 := fmt.Sprintf(`{"dealId":"DL-20261020-0006","poNumber":"PO-1","buyerId":"BUYER-001","supplierId":"SUP-007","deliveryDeadline":%q,
 		"mse":{"category":"MEDIUM","termDays":45,"applies":true},"approvalPolicy":[{"minPaise":0,"requiredRoles":["PLANT_HEAD"]}]}`,
@@ -446,6 +472,28 @@ func TestNonMseDealSkipsGuard(t *testing.T) {
 	if _, err := f.m.Evaluate(context.Background(), idProc, "GetMseClock", s.id, "1"); !apperr.Is(err, apperr.ErrMseNotApplicable) {
 		t.Fatalf("GetMseClock on non-MSE deal: %v", err)
 	}
+}
+
+// TestNonMseDealNotDeemedAccepted: deemed acceptance is an MSMED Act rule, so (as in the chaincode)
+// a non-MSE delivery with no QC stays DELIVERED after 15 days.
+func TestNonMseDealNotDeemedAccepted(t *testing.T) {
+	f := newFixture(t)
+	s := dealSpec{"DL-20261020-0008", "SUP-007", model.MseNone, 0, false, 10, 100}
+	f.funded(s)
+	f.grn(s.id, 1, 10, "warehouse:GR-1")
+	f.clk.Advance(16 * 24 * time.Hour)
+	f.ok(idBank, "TickDeadlines", s.id)
+	if tr := f.tranche(s.id, 1); tr.Status != model.TrancheDelivered {
+		t.Fatalf("non-MSE tranche must not be deemed accepted, got %s", tr.Status)
+	}
+}
+
+func TestLienMustEqualPOValue(t *testing.T) {
+	f := newFixture(t)
+	f.create(demo)
+	f.fails(apperr.ErrLienExceeded, idBank, "ConfirmLien", demo.id, "LIEN-1", fmt.Sprint(demo.qty*demo.price+1))
+	f.fails(apperr.ErrLienExceeded, idBank, "ConfirmLien", demo.id, "LIEN-1", fmt.Sprint(demo.qty*demo.price-1))
+	f.ok(idBank, "ConfirmLien", demo.id, "LIEN-1", fmt.Sprint(demo.qty*demo.price))
 }
 
 func TestFailedTransactionWritesNothing(t *testing.T) {

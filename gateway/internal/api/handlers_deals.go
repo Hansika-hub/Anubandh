@@ -25,6 +25,8 @@ var (
 	dealIDRe  = regexp.MustCompile(`^DL-(\d{8})-\d{4}$`)
 	partyIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:/-]{0,63}$`)
 	udyamRe   = regexp.MustCompile(`^UDYAM-[A-Z]{2}-\d{2}-\d{7}$`)
+
+	idemKeyMsg = "idemKey must look like <source>:<id>, e.g. warehouse:GR-88123 (source [a-z0-9_-]{1,32}, id [A-Za-z0-9._-]{1,95})"
 )
 
 // defaultApprovalPolicy is BUILD.md §4.2's example: Plant Head always, plus CFO from ₹50 lakh.
@@ -206,8 +208,8 @@ func validateDeal(b *createDealBody, now time.Time) (int64, error) {
 	if b.LienAmountPaise == 0 {
 		b.LienAmountPaise = sum
 	}
-	if b.LienAmountPaise < sum {
-		return 0, apperr.Newf(apperr.ErrBadRequest, "lienAmountPaise %d must cover the PO value %d", b.LienAmountPaise, sum)
+	if b.LienAmountPaise != sum { // the chaincode locks exactly the PO value
+		return 0, apperr.Newf(apperr.ErrBadRequest, "lienAmountPaise %d must equal the PO value %d (omit it to default)", b.LienAmountPaise, sum)
 	}
 	if b.MSE == nil {
 		b.MSE = &model.MSE{Category: model.MseNone}
@@ -226,6 +228,9 @@ func validateDeal(b *createDealBody, now time.Time) (int64, error) {
 		}
 		if b.MSE.TermDays != 15 && b.MSE.TermDays != 45 {
 			return 0, errBadRequest("mse.termDays must be 15 (no written agreement) or 45 (written agreement, the statutory maximum)")
+		}
+		if b.MSE.TermDays == 45 && !b.MSE.WrittenAgreement {
+			return 0, errBadRequest("mse.termDays 45 requires mse.writtenAgreement=true (MSMED Act §15)")
 		}
 		if !udyamRe.MatchString(b.MSE.UdyamNo) {
 			return 0, errBadRequest("mse.udyamNo must look like UDYAM-XX-00-0000000")
@@ -275,7 +280,7 @@ func validateDeal(b *createDealBody, now time.Time) (int64, error) {
 }
 
 // buildDealJSON is the chaincode's dealJSON: the caller's object with lines removed and every
-// contract field normalised. Unknown fields (e.g. a future mse.writtenAgreement) pass through.
+// contract field normalised. Unknown fields pass through.
 func buildDealJSON(raw map[string]json.RawMessage, b *createDealBody) ([]byte, error) {
 	out := map[string]any{}
 	for k, v := range raw {
@@ -289,6 +294,7 @@ func buildDealJSON(raw map[string]json.RawMessage, b *createDealBody) ([]byte, e
 		_ = json.Unmarshal(rawMSE, &mse)
 	}
 	mse["category"], mse["termDays"], mse["applies"] = b.MSE.Category, b.MSE.TermDays, b.MSE.Applies
+	mse["writtenAgreement"] = b.MSE.WrittenAgreement
 	if b.MSE.UdyamNo != "" {
 		mse["udyamNo"] = b.MSE.UdyamNo
 	}

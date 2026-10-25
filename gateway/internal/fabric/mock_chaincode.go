@@ -131,8 +131,8 @@ func ccCreateDeal(t *mtx, a []string) ([]byte, error) {
 	if d.LienAmountPaise == 0 {
 		d.LienAmountPaise = sum
 	}
-	if d.LienAmountPaise < sum {
-		return nil, apperr.Newf(apperr.ErrBadRequest, "lienAmountPaise %d is below the PO value %d", d.LienAmountPaise, sum)
+	if d.LienAmountPaise != sum {
+		return nil, apperr.Newf(apperr.ErrBadRequest, "lienAmountPaise %d must equal the PO value %d", d.LienAmountPaise, sum)
 	}
 	if len(d.ApprovalPolicy) == 0 {
 		return nil, apperr.New(apperr.ErrBadRequest, "approvalPolicy is required")
@@ -143,6 +143,12 @@ func ccCreateDeal(t *mtx, a []string) ([]byte, error) {
 		}
 		if d.MSE.TermDays != 15 && d.MSE.TermDays != 45 {
 			return nil, apperr.New(apperr.ErrBadRequest, "mse.termDays must be 15 or 45")
+		}
+		if d.MSE.TermDays == 45 && !d.MSE.WrittenAgreement {
+			return nil, apperr.New(apperr.ErrBadRequest, "45-day term requires mse.writtenAgreement=true (MSMED Act s.15)")
+		}
+		if strings.TrimSpace(d.MSE.UdyamNo) == "" {
+			return nil, apperr.New(apperr.ErrBadRequest, "mse.udyamNo required when mse.applies")
 		}
 	}
 	if d.DeliveryDeadline == nil {
@@ -177,14 +183,6 @@ func ccCreateDeal(t *mtx, a []string) ([]byte, error) {
 	return nil, nil
 }
 
-func linesValue(lines []*model.Line) int64 {
-	var s int64
-	for _, l := range lines {
-		s += l.OrderedQty * l.UnitPricePaise
-	}
-	return s
-}
-
 func ccConfirmLien(t *mtx, a []string) ([]byte, error) {
 	if err := t.requireOrg(model.OrgBank); err != nil {
 		return nil, err
@@ -203,11 +201,8 @@ func ccConfirmLien(t *mtx, a []string) ([]byte, error) {
 	if d.Status != model.DealCreated {
 		return nil, apperr.Newf(apperr.ErrInvalidTransition, "deal %s is %s, lien can only be confirmed on CREATED", d.DealID, d.Status)
 	}
-	if amount != d.LienAmountPaise && amount != linesValue(t.st().Lines[d.DealID]) {
-		if amount > d.LienAmountPaise {
-			return nil, apperr.Newf(apperr.ErrLienExceeded, "lien %d exceeds deal lien amount %d", amount, d.LienAmountPaise)
-		}
-		return nil, apperr.Newf(apperr.ErrBadRequest, "lien %d must equal the deal lien amount %d", amount, d.LienAmountPaise)
+	if amount != d.LienAmountPaise {
+		return nil, apperr.Newf(apperr.ErrLienExceeded, "lien amount %d must equal deal lien %d", amount, d.LienAmountPaise)
 	}
 	d.Status = model.DealFunded
 	d.LienRef = ptr(a[1])
@@ -306,9 +301,12 @@ func ccPostGoodsReceipt(t *mtx, a []string) ([]byte, error) {
 		if existing.Status != model.TranchePending {
 			return nil, apperr.Newf(apperr.ErrInvalidTransition, "tranche %d already received", n)
 		}
+		if len(in) != len(existing.Expected) {
+			return nil, apperr.Newf(apperr.ErrQtyMismatch, "replacement tranche expects %d line(s)", len(existing.Expected))
+		}
 		for _, l := range in {
-			if l.DeliveredQty > existing.Expected[l.LineNo] {
-				return nil, apperr.Newf(apperr.ErrQtyMismatch, "line %d: %d delivered, %d replacement units expected", l.LineNo, l.DeliveredQty, existing.Expected[l.LineNo])
+			if l.DeliveredQty != existing.Expected[l.LineNo] {
+				return nil, apperr.Newf(apperr.ErrQtyMismatch, "replacement line %d must deliver exactly %d", l.LineNo, existing.Expected[l.LineNo])
 			}
 		}
 		tr = existing
@@ -1094,7 +1092,7 @@ func ccTickDeadlines(t *mtx, a []string) ([]byte, error) {
 	}
 	deemed := map[int64]bool{}
 	for _, tr := range t.st().Tranches[d.DealID] {
-		if tr.Status == model.TrancheDelivered && tr.DeliveredAt != nil && (tr.Obj == nil || !tr.Obj.Open) &&
+		if d.MSE.Applies && tr.Status == model.TrancheDelivered && tr.DeliveredAt != nil && (tr.Obj == nil || !tr.Obj.Open) &&
 			!t.now.Before(acceptanceDay(tr).Add(deemedAcceptanceAfter)) {
 			deemAccept(t, d, tr)
 			emitAcceptance(t, d, tr, model.EvDeemedAcceptance)

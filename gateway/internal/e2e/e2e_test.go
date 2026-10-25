@@ -291,6 +291,8 @@ func TestAuthAndValidation(t *testing.T) {
 		"no zero band":     e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"approvalPolicy":[{"minPaise":5,"requiredRoles":["CFO"]}]`),
 		"bad approver":     e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"approvalPolicy":[{"minPaise":0,"requiredRoles":["AUDITOR"]}]`),
 		"lien below value": e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"lienAmountPaise":5`),
+		"lien above value": e.dealBody(demoID, "SUP-007", "SMALL", 45, true, 100, 1000000, `,"lienAmountPaise":100000001`),
+		"45 no agreement":  strings.Replace(body, `"writtenAgreement":true`, `"writtenAgreement":false`, 1),
 		"other buyer":      strings.Replace(body, `"buyerId":"BUYER-001"`, `"buyerId":"BUYER-999"`, 1),
 	}
 	for name, b := range bad {
@@ -313,6 +315,11 @@ func TestAuthAndValidation(t *testing.T) {
 	e.mustErr(403, "ERR_FORBIDDEN_ROLE", e.do("POST", "/api/v1/deals/"+demoID+"/tranches/1/ack", "SUPPLIER", "supplier-012", nil), "another supplier's deal")
 	e.mustErr(403, "ERR_FORBIDDEN_ROLE", e.internal("ReleaseTranche", demoID, "1", "gateway:x"), "internal fn allowlist")
 	e.mustErr(400, "ERR_BAD_REQUEST", e.do("POST", "/internal/v1/submit", "", "", map[string]any{"fn": "PostGoodsReceipt", "args": []string{demoID, "2", "[]", "warehouse:A"}, "idemKey": "warehouse:B"}), "idemKey mismatch")
+	// Keys the chaincode would reject fail here with 400 instead of on chain.
+	for _, key := range []string{"ERP:QC-1", "erp/x:QC-1", "warehouse:GR:1"} {
+		e.mustErr(400, "ERR_BAD_REQUEST", e.internal("PostGoodsReceipt", demoID, "2", `[{"lineNo":1,"deliveredQty":1}]`, key), "idemKey "+key)
+		e.mustErr(400, "ERR_BAD_REQUEST", e.do("POST", "/api/v1/deals/"+demoID+"/tranches/1/release", "BUYER", "buyer-procurement", map[string]any{"idemKey": key}), "release idemKey "+key)
+	}
 	e.mustErr(400, "ERR_BAD_REQUEST", e.do("POST", "/api/v1/deals/"+demoID+"/held/1/1/replacement", "SUPPLIER", "supplier-007", map[string]any{"qty": -1}), "negative qty")
 	e.mustErr(400, "ERR_BAD_REQUEST", e.do("POST", "/api/v1/deals/"+demoID+"/held/1/1/dispute/resolve", "BANK", "bank-arbiter", map[string]any{"resolution": "SPLIT"}), "bad resolution")
 	e.mustErr(403, "ERR_FORBIDDEN_ROLE", e.do("POST", "/api/v1/deals/"+demoID+"/held/1/1/dispute/resolve", "BANK", "bank-officer", map[string]any{"resolution": "REFUND_TO_BUYER"}), "only ARBITER")
@@ -481,7 +488,7 @@ func TestTxEventBatchProjectedPerLogicalEvent(t *testing.T) {
 	e := setup(t)
 	const id = "DL-20261020-0003"
 	body := fmt.Sprintf(`{"dealId":%q,"poNumber":"PO-4412","buyerId":"BUYER-001","supplierId":"SUP-007",
-		"deliveryDeadline":%q,"mse":{"category":"SMALL","termDays":45,"udyamNo":"UDYAM-KL-00-0000007","applies":true},
+		"deliveryDeadline":%q,"mse":{"category":"SMALL","termDays":45,"udyamNo":"UDYAM-KL-00-0000007","applies":true,"writtenAgreement":true},
 		"lines":[{"lineNo":1,"sku":"SKU-STEEL-12","orderedQty":50,"unitPricePaise":1000000},
 		         {"lineNo":2,"sku":"SKU-STEEL-16","orderedQty":50,"unitPricePaise":1000000}]}`,
 		id, e.clk.Now().Add(60*24*time.Hour).UTC().Format(time.RFC3339))

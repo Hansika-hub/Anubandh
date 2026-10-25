@@ -150,7 +150,7 @@ func main() {
 	deadline := now.Add(60 * 24 * time.Hour).Format(time.RFC3339)
 	mk := func(id, supplier, cat string, term int, qty, price int64) map[string]any {
 		return map[string]any{"dealId": id, "poNumber": "PO-4411", "buyerId": "BUYER-001", "supplierId": supplier, "deliveryDeadline": deadline,
-			"mse":   map[string]any{"category": cat, "termDays": term, "udyamNo": "UDYAM-KL-00-0000007", "applies": true},
+			"mse":   map[string]any{"category": cat, "termDays": term, "udyamNo": "UDYAM-KL-00-0000007", "applies": true, "writtenAgreement": term == 45},
 			"lines": []map[string]any{{"lineNo": 1, "sku": "SKU-STEEL-12", "orderedQty": qty, "unitPricePaise": price}}}
 	}
 	fmt.Println("1-2. Buyer creates the ₹10L deal, bank confirms the lien")

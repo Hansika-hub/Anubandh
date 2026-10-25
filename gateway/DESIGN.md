@@ -58,9 +58,11 @@ gateway with `FABRIC_MOCK=false`, then run `go run ./cmd/smoke` with a sim-bank.
 * **When the clock starts (§2(b)).** Acceptance, or deemed acceptance when no written objection
   comes within 15 days, falls on the **day of actual delivery**. If the buyer objected in writing,
   it falls on the day the objection is removed. The mock anchors `mseClockStart` there, not at the
-  QC timestamp. The compliance report's `acceptanceDate` is that statutory date.
+  QC timestamp. The compliance report's `acceptanceDate` is that statutory date. Deemed acceptance
+  is a §2(b) rule, so it applies to MSE deals only.
 * **The deadline (§15).** Payment is due by the agreed date, at most 45 days, or, without an
-  agreement, before the "appointed day" (15 days). `termDays` is restricted to 15 or 45.
+  agreement, before the "appointed day" (15 days). `termDays` is restricted to 15 or 45, and 45
+  needs `mse.writtenAgreement=true`.
 * **Who is covered (§2(n)).** "Supplier" covers micro and small enterprises only, so a MEDIUM
   category with `applies:true` is rejected (`ERR_MSE_NOT_APPLICABLE`).
 
@@ -81,13 +83,17 @@ Sources: [Taxmann: buyer's liability u/s 15](https://taxmann.com/post/blog/faqs-
   * `TrancheReleased` needs `amountPaise` and `supplierAccountRef`. If they are missing, the
     listener reads the amount from `GetTranche`.
   * QC before receipt must return `ERR_INVALID_TRANSITION`, so the worker requeues it.
-  * Open differences to settle at stand-up (the chaincode stays the authority meanwhile):
-    * **MSE clock start.** The chaincode starts it at the QC timestamp; MSMED Act §2(b) puts
-      acceptance on the day of delivery (see §3), which the mock follows.
-    * **Deemed acceptance scope.** The chaincode applies it to MSE deals only; BUILD.md §5.3 does
-      not restrict it, and the mock applies it to every deal.
-    * **Lien amount (D-4).** The chaincode requires lien = PO value; the gateway accepts lien ≥ PO
-      value, so a larger lien is rejected by the chaincode with `ERR_BAD_REQUEST` (HTTP 400).
+  * The API rejects with 400 what the chaincode would reject: `idemKey` uses the chaincode regex
+    `^[a-z0-9_-]+:[A-Za-z0-9._-]+$` (so `ERP:QC-1` fails), `termDays` 45 needs
+    `mse.writtenAgreement`, and the lien must equal the PO value. The mock enforces the same rules,
+    as well as deemed acceptance for MSE deals only and exact quantities on replacement receipts.
+  * A replacement receipt that arrives before `ShipReplacement` gets `ERR_QTY_MISMATCH` (nothing
+    is owed yet), not `ERR_INVALID_TRANSITION`, so ingest does not requeue it by default.
+  * **Open difference: the MSE clock start.** The chaincode starts the clock at the QC timestamp
+    and, on deemed acceptance, at delivery + 15 days. MSMED Act §2(b) puts acceptance on the
+    day of delivery (see §3), which the mock follows. A 15-day deal therefore shows a deadline 15
+    days later on a real network than on the mock, and the e2e clock assertions hold only on the
+    mock. The fix belongs in the chaincode.
   * The mock (`internal/fabric/mock_chaincode.go`) mirrors the §5.5 invariants with the same test
     names; use it as an executable reference.
 * **M3 (infra/ingest).**

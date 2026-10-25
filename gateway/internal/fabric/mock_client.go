@@ -453,8 +453,8 @@ func encodeEvents(evs []mockEmit) (string, []byte) {
 }
 
 func (t *mtx) useIdem(key string) error {
-	if key == "" {
-		return apperr.New(apperr.ErrBadRequest, "idemKey is required")
+	if !model.IdemKeyRe.MatchString(key) {
+		return apperr.Newf(apperr.ErrBadRequest, "idemKey must look like <source>:<id>, got %q", key)
 	}
 	if t.st().Idem[key] {
 		return apperr.Newf(apperr.ErrDuplicate, "idem key %s already processed", key)

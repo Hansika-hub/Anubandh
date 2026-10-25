@@ -3,7 +3,6 @@ package api
 import (
 	"encoding/json"
 	"net/http"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -12,9 +11,6 @@ import (
 	"github.com/Hansika-hub/anubandh/gateway/internal/model"
 	"github.com/Hansika-hub/anubandh/gateway/internal/release"
 )
-
-// idemKeyRe is "<source>:<sourceEventId>" (BUILD.md §2).
-var idemKeyRe = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,32}:[A-Za-z0-9:._/-]{1,95}$`)
 
 func trancheArgs(r *http.Request) (string, int64, error) {
 	dealID, err := pathDealID(r)
@@ -112,8 +108,8 @@ func (h *Handlers) releaseTranche(w http.ResponseWriter, r *http.Request) {
 	if key == "" {
 		key = release.IdemKey(dealID, n) // deterministic: a double click can never release twice
 	}
-	if !idemKeyRe.MatchString(key) {
-		writeErr(w, h.log, errBadRequest("idemKey must look like <source>:<id> (max 128, [A-Za-z0-9:._/-])"))
+	if !model.IdemKeyRe.MatchString(key) {
+		writeErr(w, h.log, errBadRequest(idemKeyMsg))
 		return
 	}
 	h.write(w, r, dealID, []model.Org{model.OrgBuyer},

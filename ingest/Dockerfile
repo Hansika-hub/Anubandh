@@ -4,7 +4,7 @@
 # go.mod/go.sum in this repo list no third-party modules yet (they could not be resolved when the
 # code was written). This build resolves them. To make builds reproducible, run `make ingest-tidy`
 # once on a networked machine and commit the resulting ingest/go.mod + go.sum.
-FROM golang:1.24-alpine AS build
+FROM golang:1.26-alpine AS build
 WORKDIR /src
 COPY . .
 RUN go get github.com/twmb/franz-go@v1.18.1 github.com/jackc/pgx/v5@v5.7.2 \

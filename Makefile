@@ -5,7 +5,7 @@ PSQL    := $(COMPOSE) exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U $$POSTG
 
 # ingest-tidy: see below
 .PHONY: ingest-tidy help env up-infra up down network network-down cc-deploy migrate seed \
-        test-cc test-ingest test-burst test-partial test-deadline test-forecast demo lint-network
+        test-cc test-ingest test-burst test-partial test-deadline test-forecast test-e2e test-sims test-web demo lint-network
 
 help:
 	@grep -E '^[a-z-]+:' Makefile | cut -d: -f1 | tr '\n' ' '; echo
@@ -19,7 +19,7 @@ up-infra: env
 
 up: env
 	$(COMPOSE) up -d --build
-	@echo "gateway :8080   ingest-api :8081"
+	@echo "web :3000   gateway :8080   ingest-api :8081   forecast :8090   sims :8101-8104"
 
 down:
 	$(COMPOSE) down
@@ -55,8 +55,27 @@ ingest-tidy:
 test-burst:
 	cd tests/burst && go vet ./... && go test -race -count=1 -v ./...
 
-test-partial test-deadline test-forecast:
-	@echo "$@ is owned by another module and is not part of M3"; exit 1
+# End-to-end (M5): need `make up`. The deadline test needs the mock chain (FABRIC_MOCK=true): a
+# real network's transaction clock cannot be fast-forwarded 15 days.
+E2E := set -a && . deploy/.env && set +a && python3 -m pytest tests/e2e
+
+test-e2e: env
+	$(E2E) -v
+
+test-partial: env
+	$(E2E) -v -m partial
+
+test-deadline: env
+	$(E2E) -v -m deadline
+
+test-forecast:
+	python3 -m pytest tests/forecast -q
+
+test-sims:
+	python3 -m pytest simulators/tests -q && cd simulators && ruff check . && ruff format --check .
+
+test-web:
+	cd web && npm ci --no-audit --no-fund && npm run lint && npm test && npm run build
 
 # Scripted live demo (BUILD.md demo scenario). Needs `make up` first.
 demo:

@@ -3,6 +3,7 @@
 # Policy (chaincode/deal/HANDOFF.md): endorsement needs BUYER + BANK peers; private collection
 # collBuyerSupplierBank has BUYER+BANK members only. Supplier has no peer, so lifecycle approval is
 # by Buyer, Bank, Auditor = MAJORITY (3 of 4) as set in configtx.yaml.
+# shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 require_tools
 

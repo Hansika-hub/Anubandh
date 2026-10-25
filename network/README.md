@@ -33,7 +33,7 @@ Lifecycle approval is MAJORITY (3 of 4): Supplier has no peer and cannot approve
 
 ## Verification status (read this)
 - `docker-compose.network.yaml`, `configtx.yaml` and `collections_config.json` are syntax-checked.
-- The scripts pass `bash -n`. **They have not been executed end to end** — the authoring environment had no Docker
+- The scripts pass `bash -n` and `shellcheck` (all severities). **They have not been executed end to end** — the authoring environment had no Docker
   daemon and no Fabric binaries.
 - **Not verified on a live Drunix network** (same open item as HANDOFF.md): the Drunix image names/versions, its
   SQL state DB (this stack uses CouchDB, the stock-Fabric default; set the Drunix state-DB variables via the

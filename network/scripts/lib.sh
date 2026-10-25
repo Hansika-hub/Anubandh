@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Shared helpers for network.sh / deploy-cc.sh. Owner: M3. Sourced, not executed.
+# shellcheck disable=SC2034  # variables here are consumed by the scripts that source this file
 set -euo pipefail
 
 NET_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -41,7 +42,8 @@ peer_env() {
   export CORE_PEER_LOCALMSPID; CORE_PEER_LOCALMSPID="$(msp_id "$org")"
   export CORE_PEER_MSPCONFIGPATH="$CRYPTO/$org/users/admin/msp"
   export CORE_PEER_TLS_ROOTCERT_FILE="$CRYPTO/$org/tlsca.pem"
-  export CORE_PEER_ADDRESS="localhost:$(peer_port "$org")"
+  local port; port="$(peer_port "$org")"
+  export CORE_PEER_ADDRESS="localhost:$port"
   export CORE_PEER_TLS_SERVERHOSTOVERRIDE="peer0.$org.$DOMAIN"
 }
 

@@ -3,7 +3,8 @@
 COMPOSE := docker compose -f deploy/docker-compose.yml --env-file deploy/.env
 PSQL    := $(COMPOSE) exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U $$POSTGRES_USER -d $$POSTGRES_DB'
 
-.PHONY: help env up-infra up down network network-down cc-deploy migrate seed \
+# ingest-tidy: see below
+.PHONY: ingest-tidy help env up-infra up down network network-down cc-deploy migrate seed \
         test-cc test-ingest test-burst test-partial test-deadline test-forecast demo lint-network
 
 help:
@@ -45,10 +46,14 @@ test-cc:
 	cd chaincode/deal && go test ./...
 
 test-ingest:
-	cd ingest && go test -race ./...
+	cd ingest && go vet ./... && go test -race -count=1 ./...
+
+# Needs network. Resolves franz-go + pgx and writes ingest/go.mod + go.sum; commit the result.
+ingest-tidy:
+	cd ingest && go get github.com/twmb/franz-go@v1.18.1 github.com/jackc/pgx/v5@v5.7.2 && go mod tidy && go vet -tags adapters ./...
 
 test-burst:
-	cd tests/burst && go test -race -count=1 -v ./...
+	cd tests/burst && go vet ./... && go test -race -count=1 -v ./...
 
 test-partial test-deadline test-forecast:
 	@echo "$@ is owned by another module and is not part of M3"; exit 1
@@ -58,5 +63,5 @@ demo:
 	./tests/burst/demo.sh
 
 lint-network:
-	shellcheck network/scripts/*.sh tests/burst/*.sh
+	shellcheck -x -P SCRIPTDIR network/scripts/*.sh tests/burst/*.sh
 	python3 -c "import json;json.load(open('network/config/collections_config.json'))"

@@ -2,6 +2,7 @@
 # Bring the Anubandh channel network up or down.   Usage: network.sh up|down|status
 # Builds: CAs -> identities (with cert attribute `role`) -> orderer + peers -> channel anubandh-ch.
 # NOT verified against a live Drunix network (see network/README.md "Verification status").
+# shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 
 ca_tls() { echo "$CRYPTO/ca/$1/tls-cert.pem"; }
@@ -37,8 +38,11 @@ enroll_msp() { # enroll_msp <org> <name> <outdir> [extra enroll args]
   ca_client "$org" enroll -u "https://${name}:${name}pw@localhost:$(ca_port "$org")" -M "$out" "$@" >/dev/null
   cp "$CRYPTO/$org/msp/config.yaml" "$out/config.yaml"
   # NodeOU config points at cacerts/ca.pem; fabric-ca names the file by CA URL, so rename it.
-  local f; f="$(ls "$out"/cacerts/*.pem | head -n1)"
-  [ "$(basename "$f")" = ca.pem ] || mv "$f" "$out/cacerts/ca.pem"
+  local f
+  for f in "$out"/cacerts/*.pem; do
+    [ "$(basename "$f")" = ca.pem ] || mv "$f" "$out/cacerts/ca.pem"
+    break
+  done
 }
 
 org_msp_dir() { # org-level MSP (public certs only)

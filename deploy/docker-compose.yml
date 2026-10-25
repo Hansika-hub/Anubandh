@@ -1,0 +1,89 @@
+# Anubandh local stack. Owner: M3. Service names are DNS names (BUILD.md section 3).
+#   make up-infra   -> postgres + redpanda + topic bootstrap only
+#   make up         -> infra + gateway + ingest-api + ingest-worker
+# Services owned by M4/M5 (forecast, sims, web) are under the "extras" profile and are
+# enabled with: docker compose --profile extras up   (their build contexts must exist).
+name: anubandh
+
+x-env: &env
+  env_file: [.env]
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    <<: *env
+    ports: ["5432:5432"]
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  redpanda:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    command:
+      - redpanda
+      - start
+      - --mode=dev-container
+      - --smp=1
+      - --memory=512M
+      - --overprovisioned
+      - --kafka-addr=internal://0.0.0.0:9092,external://0.0.0.0:19092
+      - --advertise-kafka-addr=internal://redpanda:9092,external://localhost:19092
+    ports: ["9092:9092", "19092:19092"]
+    volumes: [rpdata:/var/lib/redpanda/data]
+    healthcheck:
+      test: ["CMD-SHELL", "rpk cluster health | grep -q 'Healthy:.*true'"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  # One-shot: create the three frozen topics (BUILD.md 9.3). Idempotent.
+  redpanda-init:
+    image: docker.redpanda.com/redpandadata/redpanda:v24.3.1
+    depends_on:
+      redpanda: { condition: service_healthy }
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        set -e
+        rpk -X brokers=redpanda:9092 topic create anubandh.events.inbound -p 12 || true
+        rpk -X brokers=redpanda:9092 topic create anubandh.events.retry   -p 12 || true
+        rpk -X brokers=redpanda:9092 topic create anubandh.events.dlq     -p 3  || true
+        rpk -X brokers=redpanda:9092 topic list
+
+  gateway:
+    build: { context: .., dockerfile: gateway/Dockerfile }
+    <<: *env
+    environment:
+      PG_DSN: ${PG_DSN}
+      FABRIC_MOCK: ${FABRIC_MOCK:-true}
+      INTERNAL_TOKEN: ${INTERNAL_TOKEN}
+      MIGRATE_ON_START: "true"
+    depends_on:
+      postgres: { condition: service_healthy }
+    ports: ["8080:8080"]
+
+  ingest-api:
+    build: { context: ../ingest, dockerfile: Dockerfile }
+    <<: *env
+    command: ["/app/ingest-api"]
+    depends_on:
+      redpanda-init: { condition: service_completed_successfully }
+    ports: ["8081:8081"]
+
+  ingest-worker:
+    build: { context: ../ingest, dockerfile: Dockerfile }
+    <<: *env
+    command: ["/app/ingest-worker"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      redpanda-init: { condition: service_completed_successfully }
+      gateway: { condition: service_started }
+    deploy: { replicas: 1 }
+
+volumes:
+  pgdata:
+  rpdata:

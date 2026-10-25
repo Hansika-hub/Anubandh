@@ -488,6 +488,15 @@ func TestNonMseDealNotDeemedAccepted(t *testing.T) {
 	}
 }
 
+// TestInvoiceNeedsFundedDeal: like the chaincode, an invoice cannot be verified before the lien.
+func TestInvoiceNeedsFundedDeal(t *testing.T) {
+	f := newFixture(t)
+	f.create(demo)
+	f.fails(apperr.ErrInvalidTransition, idProc, "VerifyInvoice", demo.id, "IRN-1", "gst:IRN-1")
+	f.ok(idBank, "ConfirmLien", demo.id, "LIEN-1", fmt.Sprint(demo.qty*demo.price))
+	f.ok(idProc, "VerifyInvoice", demo.id, "IRN-1", "gst:IRN-1")
+}
+
 func TestLienMustEqualPOValue(t *testing.T) {
 	f := newFixture(t)
 	f.create(demo)

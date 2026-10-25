@@ -50,6 +50,8 @@ func TestValidateRejects(t *testing.T) {
 	}{
 		{"bad type", func(e *InboundEvent) { e.EventType = "NOPE" }},
 		{"bad idem key", func(e *InboundEvent) { e.IdemKey = "nocolon" }},
+		{"upper-case idem source", func(e *InboundEvent) { e.IdemKey = "ERP:QC-1" }}, // chaincode rejects it
+		{"slash in idem source", func(e *InboundEvent) { e.IdemKey = "erp/x:QC-1" }},
 		{"bad deal id", func(e *InboundEvent) { e.DealID = "DL-1" }},
 		{"no occurredAt", func(e *InboundEvent) { e.OccurredAt = time.Time{} }},
 		{"no payload", func(e *InboundEvent) { e.Payload = nil }},

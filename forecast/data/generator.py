@@ -16,7 +16,7 @@ def generate_synthetic_year(seed: int = 42, n_suppliers: int = 50, n_customers: 
     for day in dates:
         for _ in range(3):
             sid = int(rng.integers(n_suppliers))
-            delay = max(0, int(round(profiles.iloc[sid].medianDelayDays + rng.normal(0, 5))))
+            delay = max(0, round(profiles.iloc[sid].medianDelayDays + rng.normal(0, 5)))
             amount = int(rng.integers(1_000_000, 20_000_000))
             deals.append({"dealId": f"DL-{day:%Y%m%d}-{len(deals)%10000:04d}", "orgId": "BUYER-001", "supplierId": profiles.iloc[sid].supplierId, "createdAt": day, "dueAt": day + pd.Timedelta(days=delay), "amountPaise": amount, "days_to_release": delay, "status": "FUNDED", "mseCategory": profiles.iloc[sid].mseCategory})
             cid = int(rng.integers(n_customers)) + 1

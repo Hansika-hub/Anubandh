@@ -225,7 +225,7 @@ func ccVerifyInvoice(t *mtx, a []string) ([]byte, error) {
 	if strings.TrimSpace(a[1]) == "" {
 		return nil, apperr.New(apperr.ErrBadRequest, "irn is required")
 	}
-	if d.Status == model.DealExpired || d.Status == model.DealClosed {
+	if d.Status == model.DealCreated || d.Status == model.DealExpired || d.Status == model.DealClosed {
 		return nil, apperr.Newf(apperr.ErrInvalidTransition, "deal %s is %s", d.DealID, d.Status)
 	}
 	d.Invoice = model.Invoice{IRN: ptr(a[1]), Verified: true}

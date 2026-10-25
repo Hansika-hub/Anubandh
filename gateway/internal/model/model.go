@@ -4,6 +4,7 @@ package model
 
 import (
 	"encoding/json"
+	"regexp"
 	"time"
 )
 
@@ -131,12 +132,19 @@ func (r Role) IsBuyerApprover() bool {
 	return false
 }
 
-// MSE is the MSMED Act classification of a deal's supplier.
+// IdemKeyRe is "<source>:<sourceEventId>" (BUILD.md §2) with the chaincode's character classes
+// (chaincode/deal/core/idempotency.go): the source is lower case without dots or slashes. A key the
+// chaincode would reject must fail here with 400, not on chain. Lengths are capped at 32 + 95.
+var IdemKeyRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}:[A-Za-z0-9._-]{1,95}$`)
+
+// MSE is the MSMED Act classification of a deal's supplier. WrittenAgreement is the additive field
+// from chaincode/deal/CONTRACT_CHANGE_001.md: termDays 45 needs it (MSMED Act §15).
 type MSE struct {
-	Category string `json:"category"`
-	TermDays int    `json:"termDays"`
-	UdyamNo  string `json:"udyamNo,omitempty"`
-	Applies  bool   `json:"applies"`
+	Category         string `json:"category"`
+	TermDays         int    `json:"termDays"`
+	UdyamNo          string `json:"udyamNo,omitempty"`
+	Applies          bool   `json:"applies"`
+	WrittenAgreement bool   `json:"writtenAgreement,omitempty"`
 }
 
 // PolicyBand is one approval band; at release time the highest band with MinPaise <= value wins.

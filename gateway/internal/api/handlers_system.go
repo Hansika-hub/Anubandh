@@ -187,8 +187,8 @@ func (h *Handlers) internalSubmit(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, h.log, apperr.Newf(apperr.ErrBadRequest, "idemKey %q does not match args[%d] %q", body.IdemKey, spec.idemArg, arg))
 			return
 		}
-		if !idemKeyRe.MatchString(arg) {
-			writeErr(w, h.log, errBadRequest("idemKey must look like <source>:<id>"))
+		if !model.IdemKeyRe.MatchString(arg) {
+			writeErr(w, h.log, errBadRequest(idemKeyMsg))
 			return
 		}
 	}

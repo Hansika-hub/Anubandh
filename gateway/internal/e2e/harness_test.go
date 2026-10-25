@@ -325,7 +325,7 @@ func arr(v any) []any          { a, _ := v.([]any); return a }
 
 func (e *env) dealBody(id, supplier, category string, termDays int, applies bool, qty, price int64, extra string) string {
 	return fmt.Sprintf(`{"dealId":%q,"poNumber":"PO-4411","buyerId":"BUYER-001","supplierId":%q,
-		"deliveryDeadline":%q,"mse":{"category":%q,"termDays":%d,"udyamNo":"UDYAM-KL-00-0000007","applies":%v}%s,
+		"deliveryDeadline":%q,"mse":{"category":%q,"termDays":%d,"udyamNo":"UDYAM-KL-00-0000007","applies":%v,"writtenAgreement":%v}%s,
 		"lines":[{"lineNo":1,"sku":"SKU-STEEL-12","orderedQty":%d,"unitPricePaise":%d}]}`,
-		id, supplier, e.clk.Now().Add(60*24*time.Hour).UTC().Format(time.RFC3339), category, termDays, applies, extra, qty, price)
+		id, supplier, e.clk.Now().Add(60*24*time.Hour).UTC().Format(time.RFC3339), category, termDays, applies, termDays == 45, extra, qty, price)
 }

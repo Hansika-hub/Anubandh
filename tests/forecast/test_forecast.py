@@ -1,11 +1,14 @@
-import numpy as np
 import pandas as pd
 from fastapi.testclient import TestClient
 
 from forecast.app.main import app
 from forecast.data.generator import generate_synthetic_year, inject_shock
 from forecast.engine.actions import is_mse_safe
-from forecast.engine.montecarlo import shortfall_probability, simulate_cash_paths, to_band
+from forecast.engine.montecarlo import (
+    shortfall_probability,
+    simulate_cash_paths,
+    to_band,
+)
 from forecast.features.build import build_release_timing_features
 from forecast.models.timing_lgbm import predict_quantiles, train_quantile_models
 

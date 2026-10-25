@@ -35,7 +35,7 @@ type InboundEvent struct {
 // out of Kafka instead of bouncing them through five retries.
 var (
 	dealIDRe  = regexp.MustCompile(`^DL-\d{8}-\d{4}$`)
-	idemKeyRe = regexp.MustCompile(`^[A-Za-z0-9._/-]{1,32}:[A-Za-z0-9:._/-]{1,95}$`)
+	idemKeyRe = regexp.MustCompile(`^[a-z0-9_-]{1,32}:[A-Za-z0-9._-]{1,95}$`) // chaincode core/idempotency.go
 )
 
 const maxQty = 1_000_000_000

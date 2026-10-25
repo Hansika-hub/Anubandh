@@ -1,0 +1,75 @@
+# CI skeleton. Owner: M3. Runs on every PR and on main.
+name: ci
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  infra-config:
+    name: compose, network config, scripts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: compose files parse
+        run: |
+          cp deploy/.env.example deploy/.env
+          docker compose -f deploy/docker-compose.yml config -q
+          docker compose -f network/docker-compose.network.yaml config -q
+      - name: json + yaml config
+        run: |
+          python3 -c "import json;json.load(open('network/config/collections_config.json'))"
+          python3 -c "import yaml;yaml.safe_load(open('network/config/configtx.yaml'))"
+      - name: shellcheck
+        run: shellcheck -x -P SCRIPTDIR network/scripts/*.sh tests/burst/*.sh
+
+  chaincode:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: chaincode/deal/go.mod, cache-dependency-path: chaincode/deal/go.sum }
+      - run: cd chaincode/deal && go vet ./... && go test -race ./...
+
+  gateway:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version-file: gateway/go.mod, cache-dependency-path: gateway/go.sum }
+      - run: cd gateway && go vet ./... && go test -race ./...
+
+  ingest:
+    name: ingest (stdlib build) + burst test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.24", cache: false }
+      - run: make test-ingest
+      - name: burst test (500 duplicate + out-of-order events -> 0 double releases)
+        run: make test-burst
+      - name: demo driver compiles
+        run: cd tests/burst && go build -o /dev/null ./cmd/demo
+
+  ingest-adapters:
+    name: ingest Kafka/Postgres adapters compile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with: { go-version: "1.24", cache: false }
+      - name: resolve deps and build with -tags adapters
+        run: |
+          cd ingest
+          go get github.com/twmb/franz-go@v1.18.1 github.com/jackc/pgx/v5@v5.7.2
+          go mod tidy
+          go vet -tags adapters ./...
+          go build -tags adapters ./...
+      - name: ingest image builds
+        run: docker build -t anubandh/ingest ingest

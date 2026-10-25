@@ -1,0 +1,109 @@
+# Channel anubandh-ch: four application orgs + one orderer org. Owner: M3.
+# Supplier-via-bank: SupplierMSP is a channel member with its own CA, but runs NO peers.
+# Its transactions are endorsed by the Bank (and Buyer) peers (chaincode/deal/HANDOFF.md).
+Organizations:
+  - &OrdererOrg
+    Name: OrdererOrg
+    ID: OrdererMSP
+    MSPDir: ../crypto/orderer/msp
+    Policies:
+      Readers: { Type: Signature, Rule: "OR('OrdererMSP.member')" }
+      Writers: { Type: Signature, Rule: "OR('OrdererMSP.member')" }
+      Admins:  { Type: Signature, Rule: "OR('OrdererMSP.admin')" }
+    OrdererEndpoints: ["orderer.anubandh.local:7050"]
+
+  - &Buyer
+    Name: BuyerMSP
+    ID: BuyerMSP
+    MSPDir: ../crypto/buyer/msp
+    Policies:
+      Readers:     { Type: Signature, Rule: "OR('BuyerMSP.admin','BuyerMSP.peer','BuyerMSP.client')" }
+      Writers:     { Type: Signature, Rule: "OR('BuyerMSP.admin','BuyerMSP.client')" }
+      Admins:      { Type: Signature, Rule: "OR('BuyerMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('BuyerMSP.peer')" }
+    AnchorPeers: [{ Host: peer0.buyer.anubandh.local, Port: 7051 }]
+
+  - &Supplier
+    Name: SupplierMSP
+    ID: SupplierMSP
+    MSPDir: ../crypto/supplier/msp
+    Policies:
+      Readers:     { Type: Signature, Rule: "OR('SupplierMSP.admin','SupplierMSP.peer','SupplierMSP.client')" }
+      Writers:     { Type: Signature, Rule: "OR('SupplierMSP.admin','SupplierMSP.client')" }
+      Admins:      { Type: Signature, Rule: "OR('SupplierMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('SupplierMSP.peer')" }
+
+  - &Bank
+    Name: BankMSP
+    ID: BankMSP
+    MSPDir: ../crypto/bank/msp
+    Policies:
+      Readers:     { Type: Signature, Rule: "OR('BankMSP.admin','BankMSP.peer','BankMSP.client')" }
+      Writers:     { Type: Signature, Rule: "OR('BankMSP.admin','BankMSP.client')" }
+      Admins:      { Type: Signature, Rule: "OR('BankMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('BankMSP.peer')" }
+    AnchorPeers: [{ Host: peer0.bank.anubandh.local, Port: 9051 }]
+
+  - &Auditor
+    Name: AuditorMSP
+    ID: AuditorMSP
+    MSPDir: ../crypto/auditor/msp
+    Policies:
+      Readers:     { Type: Signature, Rule: "OR('AuditorMSP.admin','AuditorMSP.peer','AuditorMSP.client')" }
+      Writers:     { Type: Signature, Rule: "OR('AuditorMSP.admin','AuditorMSP.client')" }
+      Admins:      { Type: Signature, Rule: "OR('AuditorMSP.admin')" }
+      Endorsement: { Type: Signature, Rule: "OR('AuditorMSP.peer')" }
+    AnchorPeers: [{ Host: peer0.auditor.anubandh.local, Port: 11051 }]
+
+Capabilities:
+  Channel:     &ChannelCapabilities     { V2_0: true }
+  Orderer:     &OrdererCapabilities     { V2_0: true }
+  Application: &ApplicationCapabilities { V2_5: true }
+
+Application: &ApplicationDefaults
+  Organizations:
+  Policies:
+    Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
+    Writers: { Type: ImplicitMeta, Rule: "ANY Writers" }
+    Admins:  { Type: ImplicitMeta, Rule: "MAJORITY Admins" }
+    # Supplier has no peers, so it can never approve a chaincode definition: MAJORITY of 4 orgs
+    # = 3 approvals (Buyer, Bank, Auditor). Do not raise this to ALL.
+    LifecycleEndorsement: { Type: ImplicitMeta, Rule: "MAJORITY Endorsement" }
+    Endorsement:          { Type: ImplicitMeta, Rule: "MAJORITY Endorsement" }
+  Capabilities: *ApplicationCapabilities
+
+Orderer: &OrdererDefaults
+  OrdererType: etcdraft
+  Addresses: ["orderer.anubandh.local:7050"]
+  EtcdRaft:
+    Consenters:
+      - Host: orderer.anubandh.local
+        Port: 7050
+        ClientTLSCert: ../crypto/orderer/orderers/orderer.anubandh.local/tls/server.crt
+        ServerTLSCert: ../crypto/orderer/orderers/orderer.anubandh.local/tls/server.crt
+  BatchTimeout: 1s
+  BatchSize: { MaxMessageCount: 20, AbsoluteMaxBytes: 99 MB, PreferredMaxBytes: 512 KB }
+  Organizations:
+  Policies:
+    Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
+    Writers: { Type: ImplicitMeta, Rule: "ANY Writers" }
+    Admins:  { Type: ImplicitMeta, Rule: "MAJORITY Admins" }
+    BlockValidation: { Type: ImplicitMeta, Rule: "ANY Writers" }
+  Capabilities: *OrdererCapabilities
+
+Channel: &ChannelDefaults
+  Policies:
+    Readers: { Type: ImplicitMeta, Rule: "ANY Readers" }
+    Writers: { Type: ImplicitMeta, Rule: "ANY Writers" }
+    Admins:  { Type: ImplicitMeta, Rule: "MAJORITY Admins" }
+  Capabilities: *ChannelCapabilities
+
+Profiles:
+  AnubandhChannel:
+    <<: *ChannelDefaults
+    Orderer:
+      <<: *OrdererDefaults
+      Organizations: [*OrdererOrg]
+    Application:
+      <<: *ApplicationDefaults
+      Organizations: [*Buyer, *Supplier, *Bank, *Auditor]

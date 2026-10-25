@@ -1,0 +1,4 @@
+deploy/.env
+network/crypto/
+network/channel-artifacts/
+*.log

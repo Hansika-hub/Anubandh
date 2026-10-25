@@ -1,0 +1,122 @@
+# Fabric/Drunix-compatible topology: 5 CAs, 1 Raft orderer, peers for Buyer, Bank, Auditor.
+# Supplier has a CA (identities) but NO peer. Images are overridable: Drunix is a Fabric v2.5.x
+# compatible fork; set DRUNIX_*_IMAGE when NPCI provides the real images (BUILD.md section 16).
+name: anubandh-net
+x-ca: &ca
+  image: ${CA_IMAGE:-hyperledger/fabric-ca:1.5.13}
+  command: sh -c 'fabric-ca-server start -b admin:adminpw -d'
+  environment: &ca-env
+    FABRIC_CA_SERVER_TLS_ENABLED: "true"
+    FABRIC_CA_SERVER_CSR_HOSTS: localhost
+x-peer: &peer
+  image: ${PEER_IMAGE:-hyperledger/fabric-peer:2.5.10}
+  command: peer node start
+  environment: &peer-env
+    CORE_PEER_TLS_ENABLED: "true"
+    CORE_PEER_TLS_CERT_FILE: /etc/hyperledger/peer/tls/server.crt
+    CORE_PEER_TLS_KEY_FILE: /etc/hyperledger/peer/tls/server.key
+    CORE_PEER_TLS_ROOTCERT_FILE: /etc/hyperledger/peer/tls/ca.crt
+    CORE_PEER_MSPCONFIGPATH: /etc/hyperledger/peer/msp
+    CORE_PEER_GOSSIP_USELEADERELECTION: "true"
+    CORE_PEER_GOSSIP_ORGLEADER: "false"
+    CORE_LEDGER_STATE_STATEDATABASE: CouchDB   # stock Fabric. Drunix's SQL state DB: see README.
+    CORE_LEDGER_STATE_COUCHDBCONFIG_USERNAME: admin
+    CORE_LEDGER_STATE_COUCHDBCONFIG_PASSWORD: ${COUCH_PASSWORD:-adminpw}
+    CORE_VM_ENDPOINT: unix:///host/var/run/docker.sock
+
+services:
+  ca.orderer: { <<: *ca, container_name: ca.orderer, ports: ["10054:7054"], volumes: ["./crypto/ca/orderer:/etc/hyperledger/fabric-ca-server"], environment: { <<: *ca-env, FABRIC_CA_SERVER_CA_NAME: ca-orderer } }
+  ca.buyer:   { <<: *ca, container_name: ca.buyer,   ports: ["7054:7054"],  volumes: ["./crypto/ca/buyer:/etc/hyperledger/fabric-ca-server"],   environment: { <<: *ca-env, FABRIC_CA_SERVER_CA_NAME: ca-buyer } }
+  ca.supplier: { <<: *ca, container_name: ca.supplier, ports: ["8054:7054"], volumes: ["./crypto/ca/supplier:/etc/hyperledger/fabric-ca-server"], environment: { <<: *ca-env, FABRIC_CA_SERVER_CA_NAME: ca-supplier } }
+  ca.bank:    { <<: *ca, container_name: ca.bank,    ports: ["9054:7054"],  volumes: ["./crypto/ca/bank:/etc/hyperledger/fabric-ca-server"],    environment: { <<: *ca-env, FABRIC_CA_SERVER_CA_NAME: ca-bank } }
+  ca.auditor: { <<: *ca, container_name: ca.auditor, ports: ["11054:7054"], volumes: ["./crypto/ca/auditor:/etc/hyperledger/fabric-ca-server"], environment: { <<: *ca-env, FABRIC_CA_SERVER_CA_NAME: ca-auditor } }
+
+  orderer.anubandh.local:
+    image: ${ORDERER_IMAGE:-hyperledger/fabric-orderer:2.5.10}
+    container_name: orderer.anubandh.local
+    environment:
+      FABRIC_LOGGING_SPEC: INFO
+      ORDERER_GENERAL_LISTENADDRESS: 0.0.0.0
+      ORDERER_GENERAL_LISTENPORT: "7050"
+      ORDERER_GENERAL_LOCALMSPID: OrdererMSP
+      ORDERER_GENERAL_LOCALMSPDIR: /var/hyperledger/orderer/msp
+      ORDERER_GENERAL_TLS_ENABLED: "true"
+      ORDERER_GENERAL_TLS_PRIVATEKEY: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_TLS_CERTIFICATE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_TLS_ROOTCAS: /var/hyperledger/orderer/tls/ca.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTCERTIFICATE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_GENERAL_CLUSTER_CLIENTPRIVATEKEY: /var/hyperledger/orderer/tls/server.key
+      ORDERER_GENERAL_CLUSTER_ROOTCAS: /var/hyperledger/orderer/tls/ca.crt
+      ORDERER_GENERAL_BOOTSTRAPMETHOD: none
+      ORDERER_CHANNELPARTICIPATION_ENABLED: "true"
+      ORDERER_ADMIN_TLS_ENABLED: "true"
+      ORDERER_ADMIN_TLS_CERTIFICATE: /var/hyperledger/orderer/tls/server.crt
+      ORDERER_ADMIN_TLS_PRIVATEKEY: /var/hyperledger/orderer/tls/server.key
+      ORDERER_ADMIN_TLS_ROOTCAS: /var/hyperledger/orderer/tls/ca.crt
+      ORDERER_ADMIN_TLS_CLIENTROOTCAS: /var/hyperledger/orderer/tls/ca.crt
+      ORDERER_ADMIN_LISTENADDRESS: 0.0.0.0:7053
+    ports: ["7050:7050", "7053:7053"]
+    volumes:
+      - ./crypto/orderer/orderers/orderer.anubandh.local/msp:/var/hyperledger/orderer/msp
+      - ./crypto/orderer/orderers/orderer.anubandh.local/tls:/var/hyperledger/orderer/tls
+      - orderer-data:/var/hyperledger/production/orderer
+
+  couchdb.buyer:   { image: "${COUCH_IMAGE:-couchdb:3.3.3}", container_name: couchdb.buyer,   environment: { COUCHDB_USER: admin, COUCHDB_PASSWORD: "${COUCH_PASSWORD:-adminpw}" } }
+  couchdb.bank:    { image: "${COUCH_IMAGE:-couchdb:3.3.3}", container_name: couchdb.bank,    environment: { COUCHDB_USER: admin, COUCHDB_PASSWORD: "${COUCH_PASSWORD:-adminpw}" } }
+  couchdb.auditor: { image: "${COUCH_IMAGE:-couchdb:3.3.3}", container_name: couchdb.auditor, environment: { COUCHDB_USER: admin, COUCHDB_PASSWORD: "${COUCH_PASSWORD:-adminpw}" } }
+
+  peer0.buyer.anubandh.local:
+    <<: *peer
+    container_name: peer0.buyer.anubandh.local
+    depends_on: [couchdb.buyer]
+    environment:
+      <<: *peer-env
+      CORE_PEER_ID: peer0.buyer.anubandh.local
+      CORE_PEER_ADDRESS: peer0.buyer.anubandh.local:7051
+      CORE_PEER_LISTENADDRESS: 0.0.0.0:7051
+      CORE_PEER_CHAINCODEADDRESS: peer0.buyer.anubandh.local:7052
+      CORE_PEER_CHAINCODELISTENADDRESS: 0.0.0.0:7052
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.buyer.anubandh.local:7051
+      CORE_PEER_GOSSIP_BOOTSTRAP: peer0.buyer.anubandh.local:7051
+      CORE_PEER_LOCALMSPID: BuyerMSP
+      CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS: couchdb.buyer:5984
+    ports: ["7051:7051"]
+    volumes: ["./crypto/buyer/peers/peer0/msp:/etc/hyperledger/peer/msp:ro", "./crypto/buyer/peers/peer0/tls:/etc/hyperledger/peer/tls:ro", "/var/run/docker.sock:/host/var/run/docker.sock", "peer-buyer:/var/hyperledger/production"]
+
+  peer0.bank.anubandh.local:
+    <<: *peer
+    container_name: peer0.bank.anubandh.local
+    depends_on: [couchdb.bank]
+    environment:
+      <<: *peer-env
+      CORE_PEER_ID: peer0.bank.anubandh.local
+      CORE_PEER_ADDRESS: peer0.bank.anubandh.local:9051
+      CORE_PEER_LISTENADDRESS: 0.0.0.0:9051
+      CORE_PEER_CHAINCODEADDRESS: peer0.bank.anubandh.local:9052
+      CORE_PEER_CHAINCODELISTENADDRESS: 0.0.0.0:9052
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.bank.anubandh.local:9051
+      CORE_PEER_GOSSIP_BOOTSTRAP: peer0.bank.anubandh.local:9051
+      CORE_PEER_LOCALMSPID: BankMSP
+      CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS: couchdb.bank:5984
+    ports: ["9051:9051"]
+    volumes: ["./crypto/bank/peers/peer0/msp:/etc/hyperledger/peer/msp:ro", "./crypto/bank/peers/peer0/tls:/etc/hyperledger/peer/tls:ro", "/var/run/docker.sock:/host/var/run/docker.sock", "peer-bank:/var/hyperledger/production"]
+
+  peer0.auditor.anubandh.local:
+    <<: *peer
+    container_name: peer0.auditor.anubandh.local
+    depends_on: [couchdb.auditor]
+    environment:
+      <<: *peer-env
+      CORE_PEER_ID: peer0.auditor.anubandh.local
+      CORE_PEER_ADDRESS: peer0.auditor.anubandh.local:11051
+      CORE_PEER_LISTENADDRESS: 0.0.0.0:11051
+      CORE_PEER_CHAINCODEADDRESS: peer0.auditor.anubandh.local:11052
+      CORE_PEER_CHAINCODELISTENADDRESS: 0.0.0.0:11052
+      CORE_PEER_GOSSIP_EXTERNALENDPOINT: peer0.auditor.anubandh.local:11051
+      CORE_PEER_GOSSIP_BOOTSTRAP: peer0.auditor.anubandh.local:11051
+      CORE_PEER_LOCALMSPID: AuditorMSP
+      CORE_LEDGER_STATE_COUCHDBCONFIG_COUCHDBADDRESS: couchdb.auditor:5984
+    ports: ["11051:11051"]
+    volumes: ["./crypto/auditor/peers/peer0/msp:/etc/hyperledger/peer/msp:ro", "./crypto/auditor/peers/peer0/tls:/etc/hyperledger/peer/tls:ro", "/var/run/docker.sock:/host/var/run/docker.sock", "peer-auditor:/var/hyperledger/production"]
+
+volumes: { orderer-data: {}, peer-buyer: {}, peer-bank: {}, peer-auditor: {} }

@@ -1,0 +1,9 @@
+{
+  "request": { "method": "GET", "urlPathPattern": "/bank/v1/payments/UTR-[0-9]+" },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "bankRef": "{{request.pathSegments.[3]}}", "status": "SETTLED" },
+    "transformers": ["response-template"]
+  }
+}

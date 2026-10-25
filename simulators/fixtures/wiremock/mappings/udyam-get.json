@@ -1,0 +1,8 @@
+{
+  "request": { "method": "GET", "urlPath": "/udyam/v1/UDYAM-KL-00-0000007" },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "udyamNo": "UDYAM-KL-00-0000007", "category": "SMALL", "activity": "MANUFACTURING", "valid": true, "supplierId": "SUP-007" }
+  }
+}

@@ -1,8 +1,7 @@
 # Anubandh local stack. Owner: M3. Service names are DNS names (BUILD.md section 3).
 #   make up-infra   -> postgres + redpanda + topic bootstrap only
-#   make up         -> infra + gateway + ingest-api + ingest-worker
-# Services owned by M4/M5 (forecast, sims, web) are under the "extras" profile and are
-# enabled with: docker compose --profile extras up   (their build contexts must exist).
+#   make up         -> everything: infra, gateway, ingest, forecast, the four simulators and the web UI
+#                      (open http://localhost:3000)
 name: anubandh
 
 x-env: &env
@@ -84,6 +83,41 @@ services:
       redpanda-init: { condition: service_completed_successfully }
       gateway: { condition: service_started }
     deploy: { replicas: 1 }
+
+  # ---- M4: forecast. Runs on synthetic data; it gets no PG_DSN because its Postgres adapter does
+  # not yet write the frozen BUILD.md section 7 schema (see forecast/README.md).
+  forecast:
+    build: { context: .., dockerfile: forecast/Dockerfile }
+    ports: ["8090:8090"]
+
+  # ---- M5: simulators (one image, SIM selects the app) and the web UI.
+  sim-bank:
+    build: &sims { context: .., dockerfile: simulators/Dockerfile }
+    environment: { SIM: bank, PORT: "8101", SETTLE_AFTER_SECONDS: "2" }
+    ports: ["8101:8101"]
+
+  sim-grn:
+    build: *sims
+    <<: *env
+    environment: { SIM: grn, PORT: "8102" }
+    ports: ["8102:8102"]
+
+  sim-gst:
+    build: *sims
+    <<: *env
+    environment: { SIM: gst, PORT: "8103" }
+    ports: ["8103:8103"]
+
+  sim-udyam:
+    build: *sims
+    environment: { SIM: udyam, PORT: "8104" }
+    ports: ["8104:8104"]
+
+  web:
+    build: { context: ../web, dockerfile: Dockerfile }
+    depends_on:
+      gateway: { condition: service_started }
+    ports: ["3000:3000"]
 
 volumes:
   pgdata:

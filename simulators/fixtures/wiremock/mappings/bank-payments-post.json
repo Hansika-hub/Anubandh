@@ -1,0 +1,9 @@
+{
+  "request": { "method": "POST", "urlPath": "/bank/v1/payments" },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "bankRef": "UTR-{{randomValue length=6 type='NUMERIC'}}", "status": "ACCEPTED" },
+    "transformers": ["response-template"]
+  }
+}

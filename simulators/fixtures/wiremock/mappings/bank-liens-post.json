@@ -1,0 +1,9 @@
+{
+  "request": { "method": "POST", "urlPath": "/bank/v1/liens" },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "lienRef": "LIEN-9921", "dealId": "{{jsonPath request.body '$.dealId'}}", "amountPaise": "{{jsonPath request.body '$.amountPaise'}}" },
+    "transformers": ["response-template"]
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "request": { "method": "GET", "urlPathPattern": "/gst/v1/irn/[A-Za-z0-9-]{4,64}" },
+  "response": {
+    "status": 200,
+    "headers": { "Content-Type": "application/json" },
+    "jsonBody": { "irn": "{{request.pathSegments.[3]}}", "valid": true, "gstin": "32AWVLI0007J1ZE", "invoiceValuePaise": 100000000, "invoiceDate": "2026-10-20" },
+    "transformers": ["response-template"]
+  }
+}
